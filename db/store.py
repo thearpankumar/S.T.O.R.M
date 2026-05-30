@@ -1,5 +1,6 @@
 import aiosqlite
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 from config.settings import settings
@@ -12,44 +13,51 @@ logger = logging.getLogger(__name__)
 class Database:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or settings.db_path
-        self._conn: aiosqlite.Connection | None = None
+        self._local = threading.local()
+
+    async def _get_conn(self) -> aiosqlite.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            conn = await aiosqlite.connect(self.db_path)
+            conn.row_factory = aiosqlite.Row
+            self._local.conn = conn
+        return conn
 
     async def connect(self) -> None:
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(self.db_path)
-        self._conn.row_factory = aiosqlite.Row
-        await self._executescript(SCHEMA_SQL)
+        conn = await self._get_conn()
+        await conn.executescript(SCHEMA_SQL)
+        await conn.commit()
 
     async def close(self) -> None:
-        if self._conn:
-            await self._conn.close()
-            self._conn = None
+        conn = getattr(self._local, "conn", None)
+        if conn:
+            await conn.close()
+            self._local.conn = None
 
     async def _executescript(self, script: str) -> None:
-        if self._conn:
-            await self._conn.executescript(script)
-            await self._conn.commit()
+        conn = await self._get_conn()
+        await conn.executescript(script)
+        await conn.commit()
 
     async def execute(self, query: str, params: tuple = ()) -> Any:
-        if self._conn:
-            return await self._conn.execute(query, params)
-        raise RuntimeError("Database not connected")
+        conn = await self._get_conn()
+        return await conn.execute(query, params)
 
     async def fetchone(self, query: str, params: tuple = ()) -> aiosqlite.Row | None:
-        if self._conn:
-            async with await self._conn.execute(query, params) as cursor:
-                return await cursor.fetchone()
-        raise RuntimeError("Database not connected")
+        conn = await self._get_conn()
+        async with await conn.execute(query, params) as cursor:
+            return await cursor.fetchone()
 
     async def fetchall(self, query: str, params: tuple = ()) -> list[aiosqlite.Row]:
-        if self._conn:
-            async with await self._conn.execute(query, params) as cursor:
-                return await cursor.fetchall()
-        raise RuntimeError("Database not connected")
+        conn = await self._get_conn()
+        async with await conn.execute(query, params) as cursor:
+            return await cursor.fetchall()
 
     async def commit(self) -> None:
-        if self._conn:
-            await self._conn.commit()
+        conn = getattr(self._local, "conn", None)
+        if conn:
+            await conn.commit()
 
 
 db = Database()

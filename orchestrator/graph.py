@@ -34,7 +34,7 @@ def get_semaphore() -> asyncio.Semaphore:
 
 
 def create_event_queue() -> asyncio.Queue[WorkerEvent]:
-    return asyncio.Queue()
+    return asyncio.Queue(maxsize=settings.event_queue_maxsize)
 
 
 async def run_worker_pipeline(

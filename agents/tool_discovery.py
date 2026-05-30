@@ -21,13 +21,15 @@ Subdomain: {subdomain}
 Web Search Results:
 {search_context}
 
-Based on the search results above, identify tools for this subdomain.
+Based on the search results above, identify specific software tools for this subdomain.
+CRITICAL REQUIREMENT: You MUST return SPECIFIC, BRANDED PRODUCT NAMES (e.g., "Splunk", "Burp Suite", "Tenable Nessus").
+DO NOT return general categories or generic terms (e.g., "Network Scanner", "Firewall", "SIEM").
 
 Requirements for Enterprise Tools ({max_ent} tools):
 - Commercial/enterprise-grade solutions mentioned in search results
 - Widely adopted in enterprise environments
 - Established vendors with enterprise support
-- Include market leaders and notable solutions from the search results
+- Include market leaders and specific, named solutions from the search results
 
 Requirements for Open-Source Tools ({max_oss} tools):
 - Actively maintained open-source projects found in search results
@@ -39,21 +41,21 @@ Return a valid JSON object with this exact structure:
 {{
     "subdomain": "{subdomain}",
     "tools_enterprise": [
-        {{"vendor": "Vendor Name", "product_name": "Product Name", "tool_type": "enterprise"}},
+        {{"vendor": "Vendor Name", "product_name": "Specific Product Name", "tool_type": "enterprise"}},
         ...
     ],
     "tools_opensource": [
-        {{"vendor": "Organization", "product_name": "Project Name", "tool_type": "opensource"}},
+        {{"vendor": "Organization", "product_name": "Specific Project Name", "tool_type": "opensource"}},
         ...
     ]
 }}
 
-Provide exactly {max_ent} enterprise tools and {max_oss} open-source tools. Use real tools from the search results when available.
+Provide exactly {max_ent} enterprise tools and {max_oss} open-source tools. Use real, specific product names from the search results when available.
 """
 
 
 async def fetch_tool_search_context(subdomain_name: str) -> tuple[list[WebSearchResult], str]:
-    query = f"{subdomain_name} tools enterprise solutions cybersecurity"
+    query = f"top specific software products tools for {subdomain_name} cybersecurity"
     logger.info(f"Searching for tools: {query}")
     
     try:
@@ -106,9 +108,12 @@ async def discover_tools(subdomain_id: int, subdomain_name: str) -> dict[str, An
         )
         logger.info("Using web search context for tool discovery")
     else:
-        fallback_prompt = f"""You are a cybersecurity tools expert. For the given subdomain, identify the top tools used in enterprise environments.
+        fallback_prompt = f"""You are a cybersecurity tools expert. For the given subdomain, identify the top specific tools used in enterprise environments.
 
 Subdomain: {subdomain_name}
+
+CRITICAL REQUIREMENT: You MUST return SPECIFIC, BRANDED PRODUCT NAMES (e.g., "Splunk", "Burp Suite", "Tenable Nessus").
+DO NOT return general categories or generic terms (e.g., "Network Scanner", "Firewall", "SIEM").
 
 Requirements for Enterprise Tools ({settings.max_enterprise_tools} tools):
 - Commercial/enterprise-grade solutions
@@ -121,11 +126,11 @@ Requirements for Open-Source Tools ({settings.max_opensource_tools} tools):
 Return a valid JSON object with this exact structure:
 {{
     "subdomain": "{subdomain_name}",
-    "tools_enterprise": [{{"vendor": "Name", "product_name": "Name", "tool_type": "enterprise"}}],
-    "tools_opensource": [{{"vendor": "Name", "product_name": "Name", "tool_type": "opensource"}}]
+    "tools_enterprise": [{{"vendor": "Vendor Name", "product_name": "Specific Product Name", "tool_type": "enterprise"}}],
+    "tools_opensource": [{{"vendor": "Organization", "product_name": "Specific Project Name", "tool_type": "opensource"}}]
 }}
 
-Provide exactly {settings.max_enterprise_tools} enterprise tools and {settings.max_opensource_tools} open-source tools."""
+Provide exactly {settings.max_enterprise_tools} enterprise tools and {settings.max_opensource_tools} open-source tools. Ensure they are actual product names, not categories."""
         prompt = fallback_prompt
         logger.info("Using fallback LLM-only tool discovery")
     

@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     log_file: str = Field(default="cybersec_agent.log")
     log_level_console: str = Field(default="INFO")
     log_level_file: str = Field(default="DEBUG")
+    log_display_lines: int = Field(default=200, ge=50, le=1000)
+    event_queue_maxsize: int = Field(default=1000, ge=100, le=10000)
+    event_timeout: float = Field(default=0.5, ge=0.1, le=5.0)
 
     model_config = SettingsConfigDict(
         env_file=".env",
