@@ -464,14 +464,102 @@ def render_sidebar() -> str:
         st.markdown("---")
         st.caption("Use the Explorer tab controls to Refresh, Stop workers, or Export.")
         
-        if st.button("Read Documentation", use_container_width=True, icon=":material/description:"):
-            st.session_state.show_docs = True
+        st.markdown(
+            """
+            <style>
+            [data-testid="stSidebar"] {
+                position: relative;
+            }
+            [data-testid="stSidebarUserContent"] {
+                padding-bottom: 120px;
+            }
+            .st-key-sidebar_bottom {
+                position: absolute;
+                bottom: 20px;
+                width: 85%;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.container(key="sidebar_bottom"):
+            if st.button("Read Documentation", use_container_width=True, icon=":material/description:"):
+                st.session_state.show_docs = True
+
+            if st.button("Settings", use_container_width=True, icon=":material/settings:"):
+                st.session_state.show_settings = True
 
         return nav_selection
 
 
+def render_settings_modal() -> None:
+    if not st.session_state.get("show_settings"):
+        return
+
+    @st.dialog("System Settings", width="large")
+    def show_settings():
+        st.markdown("Modify the active configuration. Changes apply immediately and are saved to `.env`.")
+        
+        settings_dict = settings.model_dump()
+        new_values = {}
+        
+        with st.form("settings_form"):
+            for key, value in settings_dict.items():
+                if isinstance(value, bool):
+                    new_values[key] = st.toggle(key, value=value)
+                elif isinstance(value, int):
+                    new_values[key] = st.number_input(key, value=value, step=1)
+                elif isinstance(value, float):
+                    new_values[key] = st.number_input(key, value=value, step=0.1)
+                else:
+                    new_values[key] = st.text_input(key, value=str(value))
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                submitted = st.form_submit_button("Save Settings", type="primary", use_container_width=True)
+            with c2:
+                cancel = st.form_submit_button("Cancel", use_container_width=True)
+                
+            if submitted:
+                # Update in-memory
+                for k, v in new_values.items():
+                    setattr(settings, k, v)
+                
+                # Update .env file
+                import os
+                env_path = ".env"
+                lines = []
+                if os.path.exists(env_path):
+                    with open(env_path, "r") as f:
+                        lines = f.readlines()
+                
+                for k, v in new_values.items():
+                    found = False
+                    for i, line in enumerate(lines):
+                        if line.startswith(f"{k}="):
+                            lines[i] = f"{k}={str(v)}\n"
+                            found = True
+                            break
+                    if not found:
+                        if lines and not lines[-1].endswith("\n"):
+                            lines[-1] += "\n"
+                        lines.append(f"{k}={str(v)}\n")
+                        
+                with open(env_path, "w") as f:
+                    f.writelines(lines)
+                
+                st.session_state.show_settings = False
+                st.rerun()
+                
+            if cancel:
+                st.session_state.show_settings = False
+                st.rerun()
+
+    show_settings()
+
+
 def render_mermaid(code: str) -> None:
-    import streamlit.components.v1 as components
     import base64
     
     html_content = f"""
@@ -499,7 +587,7 @@ def render_mermaid(code: str) -> None:
     
     b64 = base64.b64encode(html_content.encode('utf-8')).decode('utf-8')
     data_url = f"data:text/html;base64,{b64}"
-    components.iframe(src=data_url, height=500, scrolling=True)
+    st.iframe(src=data_url, height=500, scrolling=True)
 
 
 def render_documentation_modal() -> None:
@@ -737,14 +825,27 @@ def handle_pending_actions(tree_data: dict[str, list[dict]]) -> None:
         st.session_state.status_type = "info"
 
 
-def render_explorer_header() -> None:
-    hcol1, hcol2, hcol3, hcol4 = st.columns([3, 1, 1, 1])
+def render_explorer_header(tree_data: dict) -> None:
+    hcol1, hcol_m, hcol2, hcol3, hcol4 = st.columns([2.8, 1.8, 1, 1, 1])
+
+    total_domains = len(tree_data) if tree_data else 0
+    all_subdomains = [sd for sublist in tree_data.values() for sd in sublist] if tree_data else []
+    total_subdomains = len(all_subdomains)
 
     with hcol1:
         st.markdown(
             "<p style='font-size:13px; color:#64748b; margin:6px 0 0;'>"
             "Select a domain or subdomain in the tree to view details and actions."
             "</p>",
+            unsafe_allow_html=True,
+        )
+        
+    with hcol_m:
+        st.markdown(
+            f"<div style='display:flex; gap:24px; align-items:center; height:32px; margin-top:2px; justify-content:flex-end; padding-right:12px;'>"
+            f"<div><span style='color:#64748b; font-size:13px;'>Domains:</span> <strong style='color:#f8fafc; font-size:15px;'>{total_domains}</strong></div>"
+            f"<div><span style='color:#64748b; font-size:13px;'>Subdomains:</span> <strong style='color:#f8fafc; font-size:15px;'>{total_subdomains}</strong></div>"
+            f"</div>",
             unsafe_allow_html=True,
         )
 
@@ -789,6 +890,7 @@ def main() -> None:
     inject_css()
     current_nav = render_sidebar()
     render_documentation_modal()
+    render_settings_modal()
 
     if current_nav == "Technique 1":
         search_svg = icon_html("search", "actions", 32)
@@ -813,7 +915,7 @@ def main() -> None:
 
         # ── Explorer tab ───────────────────────────────────────────────────────────
         with tab1:
-            render_explorer_header()
+            render_explorer_header(tree_data)
 
             # Use a standard 2-column layout with a smaller gap
             col_tree, col_detail = st.columns([1, 1.8], gap="medium")

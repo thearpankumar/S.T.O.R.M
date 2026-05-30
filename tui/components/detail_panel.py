@@ -171,13 +171,6 @@ def render_subdomain_detail(
     st.markdown(
         f"<p style='font-size:14px; color:#94a3b8; text-align:left; margin:0 0 8px;'>"
         f"Domain: <strong>{safe_domain}</strong> / Status: "
-        f"<span style='color':{'#22c55e' if status=='done' else '#3b82f6' if status=='running' else '#ef4444' if status=='failed' else '#6b7280'}; font-weight:600;'>"
-        f"{status.upper()}</span></p>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f"<p style='font-size:14px; color:#94a3b8; text-align:left; margin:0 0 8px;'>"
-        f"Domain: <strong>{domain}</strong> / Status: "
         f"<span style='color:{'#22c55e' if status=='done' else '#3b82f6' if status=='running' else '#ef4444' if status=='failed' else '#6b7280'}; font-weight:600;'>"
         f"{status.upper()}</span></p>",
         unsafe_allow_html=True,
