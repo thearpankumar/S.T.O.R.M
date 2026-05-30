@@ -587,7 +587,7 @@ def render_mermaid(code: str) -> None:
     
     b64 = base64.b64encode(html_content.encode('utf-8')).decode('utf-8')
     data_url = f"data:text/html;base64,{b64}"
-    st.iframe(src=data_url, height=500, scrolling=True)
+    st.iframe(src=data_url, height=500)
 
 
 def render_documentation_modal() -> None:
