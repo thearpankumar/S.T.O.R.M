@@ -81,6 +81,8 @@ def init_session_state() -> None:
         "t2_selected_domain": None,
         "t2_selected_tool": None,
         "last_export_path": None,
+        # ── T3 ─────────────────────────────────────────
+        "t3_selected_tool_id": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -288,12 +290,34 @@ async def export_all_async() -> str:
         raise RuntimeError("Excel export module not available") from e
 
 
+async def export_t3_async() -> str:
+    try:
+        from excel.t3_bridge import export_t3_workbook
+        return await export_t3_workbook()
+    except ImportError as e:
+        logger.error(f"Failed to import excel t3_bridge: {e}")
+        raise RuntimeError("Excel T3 export module not available") from e
+    except ValueError as e:
+        # export_t3_workbook raises ValueError when no tools exist yet
+        raise RuntimeError(str(e)) from e
+    except Exception as e:
+        logger.error(f"T3 export failed: {e}")
+        raise RuntimeError(f"Export failed: {e}") from e
+
+
 async def stop_all_workers_async() -> int:
     running_count = sum(
         1 for p in st.session_state.running_pipelines.values()
         if p.get("status") == "running"
     )
     st.session_state.running_pipelines = {}
+    # Cancel all tracked futures (T1, T2, T3)
+    for key, future in list(_PIPELINE_FUTURES.items()):
+        future.cancel()
+    _PIPELINE_FUTURES.clear()
+    # Reset progress tracker
+    with _PIPELINE_LOCK:
+        _PIPELINE_PROGRESS.clear()
     try:
         await db.execute(
             "UPDATE subdomains SET status = ? WHERE status = ?",
@@ -478,6 +502,12 @@ def inject_css() -> None:
         border-top: 1px solid rgba(255, 255, 255, 0.05);
     }
 
+    /* ═══ DISABLE SELECTBOX TYPING ═══════════════════════════════════ */
+    div[data-baseweb="select"] input {
+        caret-color: transparent !important;
+        pointer-events: none !important;
+    }
+
     /* ═══ HIDE DEFAULT STREAMLIT HEADER/MENU ═════════════════════════ */
     header[data-testid="stHeader"] {
         display: none !important;
@@ -494,9 +524,10 @@ def render_sidebar() -> str:
         st.markdown("---")
         nav_selection = st.selectbox(
             "Techniques",
-            options=["Technique 1", "Technique 2"],
+            options=["Technique 1", "Technique 2", "Technique 3"],
             index=0,
             label_visibility="collapsed",
+            filter_mode=None,
         )
         
         st.markdown("---")
@@ -1026,7 +1057,10 @@ def main() -> None:
             # Auto-refresh toggle
             auto_refresh = st.toggle("Auto-refresh (every 3s)", value=False, key="auto_refresh")
 
-            running_pipelines = st.session_state.running_pipelines
+            running_pipelines = {
+                k: v for k, v in st.session_state.running_pipelines.items()
+                if not k.startswith("t2_")
+            }
 
             if not running_pipelines:
                 st.info("No pipelines are currently tracked. Start one from the Explorer tab.")
@@ -1119,24 +1153,14 @@ def main() -> None:
                     st.rerun()
 
             if auto_refresh:
-                st.markdown("""
-                <script>
-                setTimeout(function() {
-                    var refreshBtn = window.parent.document.querySelector('[data-testid="stBaseButton-secondary"]');
-                    if (refreshBtn && refreshBtn.innerText.includes('Refresh')) {
-                        refreshBtn.click();
-                    } else {
-                        window.parent.location.reload();
-                    }
-                }, 3000);
-                </script>
-                """, unsafe_allow_html=True)
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=3000, key="ar_t1")
 
         # ── Logs tab ───────────────────────────────────────────────────────────────
         with tab3:
             render_log_panel()
 
-    else:
+    elif current_nav == "Technique 2":
         trophies_svg = icon_html("emoji_events", "actions", 32)
         st.markdown(f"<h1 style='margin-bottom:0px; padding-bottom:8px;'>{trophies_svg} Subdomain Tool Rankings</h1>", unsafe_allow_html=True)
         st.markdown("Rank tools within each subdomain based on feature coverage and market presence.")
@@ -1327,18 +1351,8 @@ def main() -> None:
                     st.info("Select a subdomain from the list to view ranked tools.")
             
             if auto_refresh_t2:
-                st.markdown("""
-                <script>
-                setTimeout(function() {
-                    var refreshBtn = window.parent.document.querySelector('[data-testid="stBaseButton-secondary"]');
-                    if (refreshBtn && refreshBtn.innerText.includes('Refresh')) {
-                        refreshBtn.click();
-                    } else {
-                        window.parent.location.reload();
-                    }
-                }, 3000);
-                </script>
-                """, unsafe_allow_html=True)
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=3000, key="ar_t2")
         
         with tab2:
             sync_pipeline_state()
@@ -1377,8 +1391,410 @@ def main() -> None:
         
         with tab3:
             render_log_panel()
-    
+
+    elif current_nav == "Technique 3":
+        # ── T3 header ─────────────────────────────────────────────────────────
+        grid_svg = icon_html("grid_view", "actions", 32)
+        st.markdown(f"<h1 style='margin-bottom:0px; padding-bottom:8px;'>{grid_svg} Tool Classification Matrix</h1>", unsafe_allow_html=True)
+        st.markdown("Cross-domain classification of all tools with NIST CSF 2.0 function mapping.")
+
+        if st.session_state.status_message:
+            st.toast(st.session_state.status_message)
+            st.session_state.status_message = ""
+
+        sync_pipeline_state()
+
+        from db.t3_store import (
+            get_t3_tools_with_coverage, get_t3_tool_memberships,
+            get_t3_stats, get_t3_run_status, get_t3_domain_list,
+        )
+
+        t3_run = run_async(get_t3_run_status())
+        t3_stats = run_async(get_t3_stats())
+
+        tab1, tab2, tab3, tab4 = st.tabs([
+            ":material/folder: Explorer",
+            ":material/bar_chart: Metrics & Insights",
+            ":material/play_arrow: Active Pipelines",
+            ":material/description: Logs",
+        ])
+
+        # ── Explorer tab ──────────────────────────────────────────────────────
+        with tab1:
+            # ── Action bar ──
+            hc1, hc2, hc3, hc4, hc5 = st.columns([2, 1, 1, 1, 1])
+            with hc1:
+                db_status = (t3_run or {}).get("status", "never")
+                t3_pipeline = st.session_state.running_pipelines.get("t3_classification")
+                if t3_pipeline and t3_pipeline.get("status") in ("queued", "running"):
+                    run_status = "running"
+                else:
+                    run_status = db_status
+                
+                total_t3 = t3_stats.get("total", 0)
+                st.markdown(
+                    f"<p style='font-size:13px; color:#64748b; margin:6px 0 0;'>"
+                    f"{total_t3} unique tools classified &nbsp;·&nbsp; status: <strong style='color:#f8fafc'>{run_status}</strong></p>",
+                    unsafe_allow_html=True,
+                )
+            with hc2:
+                auto_refresh_t3 = st.toggle("Auto (3s)", value=False, key="auto_refresh_t3")
+            with hc3:
+                if st.button("Run", width="stretch", icon=":material/play_arrow:", help="Run T3 classification"):
+                    st.session_state._pending_t3_pipeline = (False,)
+                    st.rerun()
+            with hc4:
+                if st.button("Re-run", width="stretch", icon=":material/refresh:", help="Wipe and re-classify"):
+                    st.session_state._pending_t3_pipeline = (True,)
+                    st.rerun()
+            with hc5:
+                if st.button("Export", width="stretch", icon=":material/download:"):
+                    try:
+                        path = run_async(export_t3_async())
+                        st.session_state.last_export_path = path
+                        st.toast("Exported successfully", icon=":material/check_circle:")
+                    except Exception as e:
+                        st.toast(f"Export failed: {e}", icon=":material/error:")
+
+            st.markdown("<hr style='border-color:#1e2533; margin:8px 0;'>", unsafe_allow_html=True)
+
+            # ── Stats row ──
+            s1, s2, s3, s4, s5, s6 = st.columns(6)
+            nist_counts = t3_stats.get("nist_counts", {})
+            nist_labels = {"ID": "Identify", "PR": "Protect", "DE": "Detect", "RS": "Respond", "RC": "Recover", "GV": "Govern"}
+            nist_colors = {"ID": "#1D4ED8", "PR": "#15803D", "DE": "#C2410C", "RS": "#B91C1C", "RC": "#7E22CE", "GV": "#0E7490"}
+            for col, func in zip([s1, s2, s3, s4, s5, s6], ["ID", "PR", "DE", "RS", "RC", "GV"]):
+                with col:
+                    cnt = nist_counts.get(func, 0)
+                    color = nist_colors[func]
+                    st.markdown(
+                        f"<div style='text-align:center; padding:8px; border-radius:6px; background:{color}22; border:1px solid {color}55;'>"
+                        f"<div style='font-size:11px; color:#94a3b8; letter-spacing:1px;'>{func} · {nist_labels[func]}</div>"
+                        f"<div style='font-size:22px; font-weight:700; color:#f8fafc;'>{cnt}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+            st.markdown("")
+
+            # ── Filters ──
+            fc1, fc2, fc3 = st.columns(3)
+            domains_for_filter = run_async(get_t3_domain_list())
+            domain_options = {d["name"]: d["id"] for d in domains_for_filter}
+
+            with fc1:
+                sel_domain = st.selectbox("Filter by Domain", ["All"] + list(domain_options.keys()),
+                                          key="t3_domain_filter", label_visibility="visible")
+            with fc2:
+                sel_nist = st.selectbox("Filter by NIST Function", ["All"] + list(nist_labels.keys()),
+                                        key="t3_nist_filter", format_func=lambda x: x if x == "All" else f"{x} — {nist_labels.get(x,'')}")
+            with fc3:
+                sel_type = st.selectbox("Filter by Type", ["All", "enterprise", "opensource"],
+                                        key="t3_type_filter")
+
+            filter_domain_id = domain_options.get(sel_domain) if sel_domain != "All" else None
+            filter_nist = sel_nist if sel_nist != "All" else None
+            filter_type = sel_type if sel_type != "All" else None
+
+            # ── Main table + detail panel ──
+            col_table, col_detail = st.columns([1.5, 1], gap="medium")
+
+            with col_table:
+                with st.spinner("Loading tools..."):
+                    t3_tools = run_async(get_t3_tools_with_coverage(
+                        filter_domain_id=filter_domain_id,
+                        filter_nist=filter_nist,
+                        filter_type=filter_type,
+                    ))
+
+                if not t3_tools:
+                    if total_t3 == 0:
+                        st.info("No tools classified yet. Click **Run** to start T3 classification.")
+                    else:
+                        st.info("No tools match the current filters.")
+                else:
+                    import json as _json
+                    import pandas as pd
+                    rows = []
+                    for t in t3_tools:
+                        nf = t.get("nist_functions") or "[]"
+                        try:
+                            nf_list = _json.loads(nf) if isinstance(nf, str) else nf
+                        except Exception:
+                            nf_list = []
+                        rows.append({
+                            "ID": t["id"],
+                            "Vendor": t.get("vendor", ""),
+                            "Product": t.get("product_name", ""),
+                            "Type": (t.get("tool_type") or "").capitalize(),
+                            "NIST Primary": t.get("nist_primary_function") or "–",
+                            "NIST Functions": ", ".join(nf_list),
+                            "Domains": t.get("domain_count", 0),
+                            "Subdomains": t.get("subdomain_count", 0),
+                        })
+                    df = pd.DataFrame(rows)
+                    event = st.dataframe(
+                        df.drop(columns=["ID"]),
+                        width="stretch",
+                        hide_index=True,
+                        height=min(35 * len(rows) + 40, 600),
+                        on_select="rerun",
+                        selection_mode="single-row",
+                        key="t3_table",
+                    )
+                    sel_rows = event.selection.get("rows", []) if event and event.selection else []
+                    if sel_rows and 0 <= sel_rows[0] < len(rows):
+                        st.session_state.t3_selected_tool_id = rows[sel_rows[0]]["ID"]
+
+            with col_detail:
+                sel_id = st.session_state.get("t3_selected_tool_id")
+                if sel_id:
+                    memberships = run_async(get_t3_tool_memberships(sel_id))
+                    sel_tool = next((t for t in t3_tools if t["id"] == sel_id), None)
+                    if sel_tool:
+                        nf = sel_tool.get("nist_functions") or "[]"
+                        try:
+                            nf_list = _json.loads(nf) if isinstance(nf, str) else nf
+                        except Exception:
+                            nf_list = []
+                        st.markdown(f"**{sel_tool.get('vendor','')} — {sel_tool.get('product_name','')}**")
+                        st.caption(f"Type: {(sel_tool.get('tool_type') or '').capitalize()}")
+
+                        st.markdown("**NIST Functions:**")
+                        cols_n = st.columns(len(nf_list) if nf_list else 1)
+                        for ci, func in enumerate(nf_list):
+                            cols_n[ci].markdown(
+                                f"<span style='background:{nist_colors.get(func,'#333')}; color:white; "
+                                f"padding:2px 8px; border-radius:4px; font-size:12px; font-weight:700;'>"
+                                f"{func} {nist_labels.get(func,'')}</span>",
+                                unsafe_allow_html=True,
+                            )
+
+                        st.markdown("")
+                        st.markdown(f"**Domain Coverage ({sel_tool.get('domain_count', 0)}):**")
+                        domains_m = sorted({m["domain_name"] for m in memberships})
+                        for d in domains_m:
+                            st.markdown(f"- {d}")
+
+                        st.markdown(f"**Subdomain Coverage ({sel_tool.get('subdomain_count', 0)}):**")
+                        with st.container(height=200, border=False):
+                            prev_dom = None
+                            for m in memberships:
+                                if m["domain_name"] != prev_dom:
+                                    st.caption(m["domain_name"])
+                                    prev_dom = m["domain_name"]
+                                st.markdown(f"  ↳ {m['subdomain_name']}")
+                else:
+                    st.info("Select a row from the table to view full domain and subdomain coverage.")
+
+            if auto_refresh_t3:
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=3000, key="ar_t3")
+
+        # ── Metrics & Insights tab (T3) ───────────────────────────────────────
+        with tab2:
+            st.markdown("### Global Classification Metrics")
+            
+            exec_summary = (t3_run or {}).get("executive_summary")
+            if exec_summary:
+                st.markdown("#### Agentic Executive Summary")
+                st.info(exec_summary, icon=":material/psychiatry:")
+                st.markdown("<br/>", unsafe_allow_html=True)
+
+            if not t3_tools:
+                st.info("No tools classified yet.")
+            else:
+                import pandas as pd
+                import altair as alt
+                import json as _json
+                import plotly.graph_objects as go
+
+                metrics_data = []
+                for t in t3_tools:
+                    nf = t.get("nist_functions") or "[]"
+                    try:
+                        nf_list = _json.loads(nf) if isinstance(nf, str) else nf
+                    except Exception:
+                        nf_list = []
+                    
+                    metrics_data.append({
+                        "Vendor": t.get("vendor", "Unknown"),
+                        "Primary Function": t.get("nist_primary_function") or "Unknown",
+                        "Tool Type": (t.get("tool_type") or "Unknown").capitalize(),
+                        "Subdomain Count": t.get("subdomain_count", 0),
+                        "Domain Count": t.get("domain_count", 0)
+                    })
+                m_df = pd.DataFrame(metrics_data)
+
+                # Row 1
+                mc1, mc2 = st.columns(2)
+                
+                with mc1:
+                    st.markdown("**NIST Primary Function Radar**")
+                    if "Primary Function" in m_df.columns and not m_df.empty:
+                        func_counts = m_df["Primary Function"].value_counts()
+                        categories = ["Identify (ID)", "Protect (PR)", "Detect (DE)", "Respond (RS)", "Recover (RC)", "Govern (GV)"]
+                        r_values = []
+                        for cat in ["ID", "PR", "DE", "RS", "RC", "GV"]:
+                            r_values.append(func_counts.get(cat, 0))
+                        
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatterpolar(
+                            r=r_values + [r_values[0]],
+                            theta=categories + [categories[0]],
+                            fill='toself',
+                            name='Tools',
+                            line=dict(color="#3b82f6")
+                        ))
+                        fig.update_layout(
+                            polar=dict(
+                                radialaxis=dict(visible=True, range=[0, max(r_values) * 1.2 if r_values and max(r_values) > 0 else 10])
+                            ),
+                            showlegend=False,
+                            height=320,
+                            margin=dict(t=20, b=20, l=20, r=20),
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)"
+                        )
+                        st.plotly_chart(fig, width="stretch")
+                
+                with mc2:
+                    st.markdown("**Tool Type Breakdown**")
+                    if "Tool Type" in m_df.columns and not m_df.empty:
+                        type_counts = m_df["Tool Type"].value_counts().reset_index()
+                        type_counts.columns = ["Type", "Count"]
+                        pie = alt.Chart(type_counts).mark_arc(outerRadius=120).encode(
+                            theta=alt.Theta(field="Count", type="quantitative"),
+                            color=alt.Color(field="Type", type="nominal"),
+                            tooltip=["Type", "Count"]
+                        ).properties(height=320)
+                        st.altair_chart(pie, width="stretch")
+                
+                st.markdown("<hr style='border-color:#1e2533; margin:16px 0;'>", unsafe_allow_html=True)
+                
+                # Row 2 (Legacy Charts - Centered)
+                _, mc_center, _ = st.columns([1, 2, 1])
+                
+                with mc_center:
+                    st.markdown("<div style='text-align: center; margin-bottom: 8px;'><strong>NIST Primary Function Distribution (Donut)</strong></div>", unsafe_allow_html=True)
+                    if "Primary Function" in m_df.columns and not m_df.empty:
+                        func_counts_d = m_df["Primary Function"].value_counts().reset_index()
+                        func_counts_d.columns = ["Function", "Count"]
+                        donut = alt.Chart(func_counts_d).mark_arc(innerRadius=50).encode(
+                            theta=alt.Theta(field="Count", type="quantitative"),
+                            color=alt.Color(field="Function", type="nominal"),
+                            tooltip=["Function", "Count"]
+                        ).properties(height=320)
+                        st.altair_chart(donut, width="stretch")
+
+                st.markdown("<hr style='border-color:#1e2533; margin:16px 0;'>", unsafe_allow_html=True)
+                
+                # Row 3
+                mc3, mc4 = st.columns(2)
+                
+                with mc3:
+                    st.markdown("**Top 10 Vendors by Footprint**")
+                    if "Vendor" in m_df.columns and not m_df.empty:
+                        vendor_counts = m_df["Vendor"].value_counts().head(10).reset_index()
+                        vendor_counts.columns = ["Vendor", "Count"]
+                        bar = alt.Chart(vendor_counts).mark_bar(color="#3b82f6").encode(
+                            x=alt.X('Count:Q', title="Number of Tools"),
+                            y=alt.Y('Vendor:N', sort='-x', title=""),
+                            tooltip=["Vendor", "Count"]
+                        ).properties(height=320)
+                        st.altair_chart(bar, width="stretch")
+                
+                with mc4:
+                    st.markdown("**Platform vs. Point Solution (Subdomain Coverage)**")
+                    if "Subdomain Count" in m_df.columns and not m_df.empty:
+                        hist = alt.Chart(m_df).mark_bar(color="#10b981").encode(
+                            x=alt.X("Subdomain Count:O", title="Number of Subdomains Covered", axis=alt.Axis(labelAngle=0)),
+                            y=alt.Y('count():Q', title="Number of Tools"),
+                            tooltip=[alt.Tooltip("Subdomain Count:O", title="Subdomains"), alt.Tooltip("count():Q", title="Tools")]
+                        ).properties(height=320)
+                        st.altair_chart(hist, width="stretch")
+
+        # ── Active Pipelines tab (T3) ─────────────────────────────────────────
+        with tab3:
+            sync_pipeline_state()
+            t3_pipeline = st.session_state.running_pipelines.get("t3_classification")
+            if not t3_pipeline:
+                st.info("No T3 classification is running. Click **Run** in the Explorer tab.")
+            else:
+                status   = t3_pipeline.get("status", "queued")
+                progress = t3_pipeline.get("progress", 0.0)
+                step     = t3_pipeline.get("step", "s1").upper()
+                message  = t3_pipeline.get("message", "")
+                s_color  = {"running": "#3b82f6", "done": "#22c55e", "failed": "#ef4444"}.get(status, "#94a3b8")
+
+                with st.container(border=True):
+                    h1, h2 = st.columns([4, 1])
+                    with h1:
+                        st.markdown("**T3 Cross-Domain Classification**")
+                    with h2:
+                        st.markdown(f"<span style='color:{s_color}; font-weight:600;'>{status.capitalize()}</span>", unsafe_allow_html=True)
+
+                    if status in ("running", "queued"):
+                        st.progress(progress, text=f"[{step}] {message}" if status == "running" else "Waiting in queue...")
+                        stages = [("S1", "Dedup", progress > 0.25), ("S2", "NIST LLM", progress > 0.95)]
+                        sc = st.columns(2)
+                        for i, (sl, slabel, done) in enumerate(stages):
+                            sc[i].markdown(
+                                f"<div style='text-align:center; font-size:11px; color:#64748b;'>"
+                                f"{'✔' if done else '○'} <strong>{sl}</strong><br/>{slabel}</div>",
+                                unsafe_allow_html=True,
+                            )
+                    elif status == "failed":
+                        st.error(f"Classification failed: {message or 'Unknown error'}")
+                    elif status == "done":
+                        st.success(f"Complete — {int(progress * 100)}%")
+
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1:
+                t3_is_active = (t3_pipeline or {}).get("status") in ("running", "queued")
+                if st.button(
+                    "Stop",
+                    width="stretch",
+                    icon=":material/stop:",
+                    key="t3_stop_btn",
+                    disabled=not t3_is_active,
+                    type="primary" if t3_is_active else "secondary",
+                ):
+                    # Cancel the background future
+                    future = _PIPELINE_FUTURES.pop("t3_classification", None)
+                    if future:
+                        future.cancel()
+                    with _PIPELINE_LOCK:
+                        if "t3_classification" in _PIPELINE_PROGRESS:
+                            _PIPELINE_PROGRESS["t3_classification"]["status"] = "failed"
+                            _PIPELINE_PROGRESS["t3_classification"]["message"] = "Stopped by user"
+                    # Mark failed in DB too
+                    try:
+                        run_async(__import__("db.t3_store", fromlist=["upsert_t3_run_status"]).upsert_t3_run_status("failed"))
+                    except Exception:
+                        pass
+                    st.toast("T3 classification stopped", icon=":material/stop:")
+                    st.rerun()
+            with cc2:
+                if st.button("Reset Data", width="stretch", icon=":material/delete_forever:", key="t3_reset_btn"):
+                    try:
+                        run_async(__import__("db.t3_store", fromlist=["reset_t3_data"]).reset_t3_data())
+                        st.toast("T3 data reset successfully", icon=":material/check_circle:")
+                    except Exception as e:
+                        st.toast(f"Reset failed: {e}", icon=":material/error:")
+                    st.rerun()
+            with cc3:
+                if st.button("Refresh", width="stretch", icon=":material/refresh:", key="t3_refresh_btn"):
+                    sync_pipeline_state()
+                    st.rerun()
+
+
+        # ── Logs tab ─────────────────────────────────────────────────────────
+        with tab4:
+            render_log_panel()
+
     pending_pipeline = st.session_state.pop("_pending_t2_pipeline", None)
+
     if pending_pipeline:
         subdomain_id, subdomain_name = pending_pipeline
         event_queue = st.session_state.event_queue
@@ -1446,6 +1862,79 @@ def main() -> None:
         _PIPELINE_FUTURES[pipeline_key] = future
         
         st.toast(f"Started ranking for {subdomain_name}")
+        st.rerun()
+
+    # ── T3: pending pipeline handler (runs outside nav branch so it fires every render) ──
+    pending_t3 = st.session_state.pop("_pending_t3_pipeline", None)
+    if pending_t3:
+        reset_t3 = pending_t3[0]
+        event_queue = st.session_state.event_queue
+        pipeline_key = "t3_classification"
+
+        # Guard: don't start a second thread if T3 is already actively running
+        existing_t3 = st.session_state.running_pipelines.get(pipeline_key, {})
+        if existing_t3.get("status") == "running" and not reset_t3:
+            st.toast("T3 classification is already running", icon=":material/info:")
+            st.rerun()
+
+        initial = {
+            "subdomain": "t3_classification",
+            "progress": 0.0,
+            "step": "s1",
+            "message": "Queued...",
+            "status": "queued",
+        }
+        with _PIPELINE_LOCK:
+            _PIPELINE_PROGRESS[pipeline_key] = initial
+            st.session_state.running_pipelines[pipeline_key] = dict(initial)
+
+        def _run_t3_in_thread(_queue=event_queue, _pkey=pipeline_key, _reset=reset_t3):
+            with _PIPELINE_LOCK:
+                if _pkey in _PIPELINE_PROGRESS:
+                    _PIPELINE_PROGRESS[_pkey]["status"] = "running"
+                    _PIPELINE_PROGRESS[_pkey]["message"] = "Starting..."
+            import asyncio
+            from orchestrator.t3_graph import run_t3_pipeline
+
+            async def _run():
+                task = asyncio.create_task(run_t3_pipeline(_queue, reset_existing=_reset))
+                while not task.done():
+                    try:
+                        event = await asyncio.wait_for(_queue.get(), timeout=settings.event_timeout)
+                        if event.subdomain == "t3_classification":
+                            with _PIPELINE_LOCK:
+                                if _pkey in _PIPELINE_PROGRESS:
+                                    _PIPELINE_PROGRESS[_pkey].update({
+                                        "progress": event.progress_pct,
+                                        "step": event.step,
+                                        "message": event.message,
+                                        "status": "running",
+                                    })
+                    except asyncio.TimeoutError:
+                        continue
+                with _PIPELINE_LOCK:
+                    if _pkey in _PIPELINE_PROGRESS:
+                        try:
+                            success = task.result()
+                        except Exception:
+                            success = False
+                        _PIPELINE_PROGRESS[_pkey]["status"] = "done" if success else "failed"
+
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(_run())
+            except Exception as exc:
+                logger.error(f"T3 pipeline thread failed: {exc}")
+                with _PIPELINE_LOCK:
+                    if _pkey in _PIPELINE_PROGRESS:
+                        _PIPELINE_PROGRESS[_pkey]["status"] = "failed"
+            finally:
+                loop.close()
+
+        future = _EXECUTOR.submit(_run_t3_in_thread)
+        _PIPELINE_FUTURES[pipeline_key] = future
+        st.toast("T3 classification started")
         st.rerun()
 
 

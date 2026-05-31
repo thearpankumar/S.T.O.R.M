@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     t2_weight_market_presence: float = Field(default=0.20, ge=0.0, le=1.0)
     t2_weight_rank_distribution: float = Field(default=0.20, ge=0.0, le=1.0)
 
+    # ── Technique 3 — Cross-domain tool classification ────────────────────────
+    t3_excel_output_path: str = Field(default="output/technique3_tool_classification.xlsx")
+    # Number of tools sent in a single NIST classification LLM call.
+    # At 20 tools/call and 2,000 tools, that is ~100 parallel-batched calls.
+    t3_nist_batch_size: int = Field(default=20, ge=5, le=50)
+    # When True, use LLM to assign NIST functions; when False, use rule-based domain mapping only.
+    t3_enable_nist_llm: bool = Field(default=True)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

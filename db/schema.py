@@ -198,4 +198,51 @@ CREATE TABLE IF NOT EXISTS t2_subdomain_worker_state (
 CREATE INDEX IF NOT EXISTS idx_t2_subdomain_tools_subdomain ON t2_subdomain_tools(subdomain_id);
 CREATE INDEX IF NOT EXISTS idx_t2_subdomain_tools_rank ON t2_subdomain_tools(subdomain_id, rank_position);
 CREATE INDEX IF NOT EXISTS idx_t2_subdomain_rankings_status ON t2_subdomain_rankings(status);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TECHNIQUE 3: Cross-domain tool classification & NIST CSF mapping
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Deduplicated canonical tool registry (one row per unique tool globally)
+CREATE TABLE IF NOT EXISTS t3_tools (
+    id INTEGER PRIMARY KEY,
+    vendor TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    tool_type TEXT CHECK(tool_type IN ('enterprise', 'opensource', 'generic')),
+    nist_functions TEXT,          -- JSON array e.g. '["ID","PR","DE"]'
+    nist_primary_function TEXT,   -- single primary e.g. 'DE'
+    domain_count INTEGER DEFAULT 0,
+    subdomain_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(vendor, product_name)
+);
+
+-- Many-to-many: canonical tool <-> subdomain membership (sourced from T1 tools)
+CREATE TABLE IF NOT EXISTS t3_tool_subdomains (
+    id INTEGER PRIMARY KEY,
+    t3_tool_id INTEGER REFERENCES t3_tools(id) ON DELETE CASCADE,
+    subdomain_id INTEGER REFERENCES subdomains(id),
+    domain_id INTEGER REFERENCES domains(id),
+    UNIQUE(t3_tool_id, subdomain_id)
+);
+
+-- Pipeline run tracker (single global classification job)
+CREATE TABLE IF NOT EXISTS t3_classification_runs (
+    id INTEGER PRIMARY KEY,
+    status TEXT DEFAULT 'pending'
+        CHECK(status IN ('pending', 'running', 'done', 'failed')),
+    total_tools INTEGER DEFAULT 0,
+    classified_tools INTEGER DEFAULT 0,
+    executive_summary TEXT,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_t3_tools_vendor ON t3_tools(vendor, product_name);
+CREATE INDEX IF NOT EXISTS idx_t3_tools_nist ON t3_tools(nist_primary_function);
+CREATE INDEX IF NOT EXISTS idx_t3_tool_subdomains_tool ON t3_tool_subdomains(t3_tool_id);
+CREATE INDEX IF NOT EXISTS idx_t3_tool_subdomains_subdomain ON t3_tool_subdomains(subdomain_id);
+CREATE INDEX IF NOT EXISTS idx_t3_tool_subdomains_domain ON t3_tool_subdomains(domain_id);
 """

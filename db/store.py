@@ -21,13 +21,16 @@ class Database:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
             conn = await aiosqlite.connect(self.db_path)
             conn.row_factory = aiosqlite.Row
+            # Apply schema on every new per-thread connection so all tables
+            # (including T3) exist regardless of which thread opens the DB.
+            await conn.executescript(SCHEMA_SQL)
+            await conn.commit()
             self._local.conn = conn
         return conn
 
     async def connect(self) -> None:
-        conn = await self._get_conn()
-        await conn.executescript(SCHEMA_SQL)
-        await conn.commit()
+        # Ensures the main-thread connection is open and schema is applied.
+        await self._get_conn()
 
     async def close(self) -> None:
         conn = getattr(self._local, "conn", None)
@@ -68,6 +71,8 @@ async def init_db() -> None:
     await _seed_domains()
     await _reset_stale_statuses()
     await _seed_t2_subdomain_rankings()
+    await _reset_stale_t3_status()
+
 
 
 async def shutdown_db() -> None:
@@ -85,6 +90,15 @@ async def _reset_stale_statuses() -> None:
         "UPDATE t2_subdomain_rankings SET status = 'pending' WHERE status = 'running'"
     )
     await db.commit()
+
+
+async def _reset_stale_t3_status() -> None:
+    """Reset any T3 classification run left in 'running' state from a previous crash."""
+    await db.execute(
+        "UPDATE t3_classification_runs SET status = 'failed' WHERE status = 'running'"
+    )
+    await db.commit()
+
 
 
 async def _seed_t2_subdomain_rankings() -> None:

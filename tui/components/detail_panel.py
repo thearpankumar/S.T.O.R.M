@@ -37,7 +37,7 @@ def _action_btn(label: str, key: str, enabled: bool, help_text: str = "", icon: 
         "label": label,
         "key": key,
         "disabled": not enabled,
-        "use_container_width": True,
+        "width": "stretch",
     }
     if help_text and not enabled:
         kwargs["help"] = help_text
