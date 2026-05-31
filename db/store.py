@@ -67,6 +67,7 @@ async def init_db() -> None:
     await db.connect()
     await _seed_domains()
     await _reset_stale_statuses()
+    await _seed_t2_subdomain_rankings()
 
 
 async def shutdown_db() -> None:
@@ -77,6 +78,27 @@ async def _reset_stale_statuses() -> None:
     await db.execute(
         "UPDATE subdomains SET status = 'pending' WHERE status = 'running'"
     )
+    await db.execute(
+        "UPDATE t2_domain_rankings SET status = 'pending' WHERE status = 'running'"
+    )
+    await db.execute(
+        "UPDATE t2_subdomain_rankings SET status = 'pending' WHERE status = 'running'"
+    )
+    await db.commit()
+
+
+async def _seed_t2_subdomain_rankings() -> None:
+    eligible = await db.fetchall(
+        """SELECT sd.id 
+           FROM subdomains sd
+           WHERE sd.status = 'done' 
+           AND EXISTS (SELECT 1 FROM tools t WHERE t.subdomain_id = sd.id)"""
+    )
+    for row in eligible:
+        await db.execute(
+            "INSERT OR IGNORE INTO t2_subdomain_rankings (subdomain_id, status) VALUES (?, 'pending')",
+            (row["id"],)
+        )
     await db.commit()
 
 
@@ -88,6 +110,19 @@ async def _seed_domains() -> None:
             "INSERT OR IGNORE INTO domains (name) VALUES (?)",
             (domain,)
         )
+    await db.commit()
+
+
+async def _seed_t2_domain_rankings() -> None:
+    from config.domains import CYBERSECURITY_DOMAINS
+    
+    for domain in CYBERSECURITY_DOMAINS:
+        domain_id = await get_domain_id(domain)
+        if domain_id:
+            await db.execute(
+                "INSERT OR IGNORE INTO t2_domain_rankings (domain_id, status) VALUES (?, 'pending')",
+                (domain_id,)
+            )
     await db.commit()
 
 

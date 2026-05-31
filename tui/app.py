@@ -38,20 +38,20 @@ nest_asyncio.apply()
 
 register_all_actions()
 
-_PIPELINE_THREADS: dict[str, threading.Thread] = {}
+import concurrent.futures
 
+_PIPELINE_FUTURES: dict[str, concurrent.futures.Future] = {}
 
-def _cleanup_thread(thread: threading.Thread, timeout: float = 5.0) -> None:
-    if thread.is_alive():
-        thread.join(timeout=timeout)
+@st.cache_resource
+def get_executor() -> concurrent.futures.ThreadPoolExecutor:
+    return concurrent.futures.ThreadPoolExecutor(max_workers=settings.max_workers, thread_name_prefix="pipeline_worker")
 
+_EXECUTOR = get_executor()
 
 import atexit
-def _shutdown_all_threads() -> None:
-    for name, thread in list(_PIPELINE_THREADS.items()):
-        if thread.is_alive():
-            thread.join(timeout=2.0)
-atexit.register(_shutdown_all_threads)
+def _shutdown_executor() -> None:
+    _EXECUTOR.shutdown(wait=False, cancel_futures=True)
+atexit.register(_shutdown_executor)
 
 @st.cache_resource
 def get_pipeline_progress() -> dict[str, dict]:
@@ -78,6 +78,9 @@ def init_session_state() -> None:
         "detail_item": None,
         "search_query": "",
         "context_menu_target": None,
+        "t2_selected_domain": None,
+        "t2_selected_tool": None,
+        "last_export_path": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -255,6 +258,25 @@ async def export_subdomain_async(subdomain_id: int, subdomain_name: str) -> str:
     except ImportError as e:
         logger.error(f"Failed to import excel bridge: {e}")
         raise RuntimeError("Excel export module not available") from e
+
+
+async def export_t2_subdomain_async(subdomain_id: int, subdomain_name: str) -> str:
+    try:
+        from excel.t2_bridge import create_t2_workbook_from_db
+        output_path = await create_t2_workbook_from_db(subdomain_id, subdomain_name)
+        return output_path
+    except ImportError as e:
+        logger.error(f"Failed to import excel t2_bridge: {e}")
+        raise RuntimeError("Excel T2 export module not available") from e
+
+
+async def export_all_t2_async() -> str:
+    try:
+        from excel.t2_bridge import export_all_t2_subdomains
+        return await export_all_t2_subdomains()
+    except ImportError as e:
+        logger.error(f"Failed to import excel t2_bridge: {e}")
+        raise RuntimeError("Excel T2 export module not available") from e
 
 
 async def export_all_async() -> str:
@@ -439,6 +461,27 @@ def inject_css() -> None:
         0%, 100% { opacity: 1; }
         50%       { opacity: 0.5; }
     }
+
+
+    /* ═══ SIDEBAR SETTINGS BOTTOM PIN (STICKY POSITION) ══════════════ */
+    [data-testid="stSidebarUserContent"] {
+        height: 100vh;
+    }
+    .st-key-sidebar_bottom {
+        position: sticky;
+        bottom: 0px;
+        z-index: 999;
+        background-color: var(--secondary-background-color);
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+        margin-top: 3rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    /* ═══ HIDE DEFAULT STREAMLIT HEADER/MENU ═════════════════════════ */
+    header[data-testid="stHeader"] {
+        display: none !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -460,34 +503,22 @@ def render_sidebar() -> str:
         st.markdown("**Config**")
         st.caption(f"Max Workers: `{settings.max_workers}`")
         st.caption(f"DB: `{settings.db_path}`")
-        st.caption(f"Output: `{settings.excel_output_path}`")
+        last_export = st.session_state.get("last_export_path")
+        if last_export:
+            display_output = last_export
+        else:
+            if nav_selection == "Technique 2":
+                display_output = settings.excel_output_path.replace(".xlsx", "_T2_Rankings.xlsx")
+            else:
+                display_output = settings.excel_output_path
+        st.caption(f"Output: `{display_output}`")
         st.markdown("---")
         st.caption("Use the Explorer tab controls to Refresh, Stop workers, or Export.")
-        
-        st.markdown(
-            """
-            <style>
-            [data-testid="stSidebar"] {
-                position: relative;
-            }
-            [data-testid="stSidebarUserContent"] {
-                padding-bottom: 120px;
-            }
-            .st-key-sidebar_bottom {
-                position: absolute;
-                bottom: 20px;
-                width: 85%;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
         with st.container(key="sidebar_bottom"):
-            if st.button("Read Documentation", use_container_width=True, icon=":material/description:"):
+            if st.button("Read Documentation", key="btn_sidebar_docs", width="stretch", icon=":material/description:"):
                 st.session_state.show_docs = True
 
-            if st.button("Settings", use_container_width=True, icon=":material/settings:"):
+            if st.button("Settings", key="btn_sidebar_settings", width="stretch", icon=":material/settings:"):
                 st.session_state.show_settings = True
 
         return nav_selection
@@ -517,9 +548,9 @@ def render_settings_modal() -> None:
             
             c1, c2 = st.columns(2)
             with c1:
-                submitted = st.form_submit_button("Save Settings", type="primary", use_container_width=True)
+                submitted = st.form_submit_button("Save Settings", type="primary", width="stretch")
             with c2:
-                cancel = st.form_submit_button("Cancel", use_container_width=True)
+                cancel = st.form_submit_button("Cancel", width="stretch")
                 
             if submitted:
                 # Update in-memory
@@ -656,7 +687,7 @@ def render_log_panel() -> None:
         )
     with col_refresh:
         st.markdown("&nbsp;", unsafe_allow_html=True)
-        if st.button("Refresh", use_container_width=True, key="log_refresh", icon=":material/refresh:"):
+        if st.button("Refresh", width="stretch", key="log_refresh", icon=":material/refresh:"):
             st.rerun()
 
     log_path = (log_dir / selected_log).resolve()
@@ -747,15 +778,15 @@ def handle_pending_actions(tree_data: dict[str, list[dict]]) -> None:
                 "subdomain_name": subdomain_name,
                 "progress":       0.0,
                 "step":           "m2",
-                "message":        "Starting…",
-                "status":         "running",
+                "message":        "Queued...",
+                "status":         "queued",
             }
             with _PIPELINE_LOCK:
                 _PIPELINE_PROGRESS[pipeline_key] = initial
             st.session_state.running_pipelines[pipeline_key] = dict(initial)
 
             st.session_state.status_message = (
-                f"Pipeline started: {subdomain_name} - check the Active Pipelines tab for live progress"
+                f"Pipeline queued: {subdomain_name} - check the Active Pipelines tab for live progress"
             )
             st.session_state.status_type = "info"
 
@@ -764,7 +795,12 @@ def handle_pending_actions(tree_data: dict[str, list[dict]]) -> None:
                 _sid=subdomain_id,
                 _sname=subdomain_name,
                 _queue=event_queue,
+                _pkey=pipeline_key
             ):
+                with _PIPELINE_LOCK:
+                    if _pkey in _PIPELINE_PROGRESS:
+                        _PIPELINE_PROGRESS[_pkey]["status"] = "running"
+                        _PIPELINE_PROGRESS[_pkey]["message"] = "Starting..."
                 try:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
@@ -776,23 +812,23 @@ def handle_pending_actions(tree_data: dict[str, list[dict]]) -> None:
                 finally:
                     loop.close()
 
-            t = threading.Thread(target=_run_in_thread, daemon=False, name=f"pipeline-{subdomain_name}")
-            _PIPELINE_THREADS[pipeline_key] = t
-            t.start()
+            future = _EXECUTOR.submit(_run_in_thread)
+            _PIPELINE_FUTURES[pipeline_key] = future
 
     elif action_type == "export":
         subdomain_id, subdomain_name = pending[1], pending[2]
         try:
             output_path = run_async(export_subdomain_async(subdomain_id, subdomain_name))
-            st.toast(f"Exported to: {output_path}", icon=":material/check_circle:")
+            st.session_state.last_export_path = output_path
+            st.toast("Successfully exported", icon=":material/check_circle:")
         except Exception as e:
             st.toast(f"Export failed: {e}", icon=":material/error:")
 
     elif action_type == "export_all":
         try:
             output_path = run_async(export_all_async())
-            st.session_state.status_message = f"Exported to: {output_path}"
-            st.session_state.status_type = "success"
+            st.session_state.last_export_path = output_path
+            st.toast("Successfully exported", icon=":material/check_circle:")
         except Exception as e:
             st.error(f"Export failed: {e}")
 
@@ -804,6 +840,9 @@ def handle_pending_actions(tree_data: dict[str, list[dict]]) -> None:
                 pipeline_key = key
                 break
         if pipeline_key:
+            future = _PIPELINE_FUTURES.get(pipeline_key)
+            if future:
+                future.cancel()
             with _PIPELINE_LOCK:
                 if pipeline_key in _PIPELINE_PROGRESS:
                     _PIPELINE_PROGRESS[pipeline_key]["status"] = "stopped"
@@ -850,23 +889,24 @@ def render_explorer_header(tree_data: dict) -> None:
         )
 
     with hcol2:
-        if st.button("Refresh", use_container_width=True, help="Clear completed pipelines and refresh", icon=":material/refresh:"):
+        if st.button("Refresh", width="stretch", help="Clear completed pipelines and refresh", icon=":material/refresh:"):
             cleanup_completed_pipelines()
             st.session_state.status_message = "Refreshed"
             st.session_state.status_type = "info"
             st.rerun()
 
     with hcol3:
-        if st.button("Stop All", use_container_width=True, help="Stop all running workers", icon=":material/stop:"):
+        if st.button("Stop All", width="stretch", help="Stop all running workers", icon=":material/stop:"):
             count = run_async(stop_all_workers_async())
             st.session_state.status_message = f"Stopped {count} workers"
             st.session_state.status_type = "warning"
             st.rerun()
 
     with hcol4:
-        if st.button("Export All", use_container_width=True, help="Export all completed subdomains", icon=":material/bar_chart:"):
+        if st.button("Export All", width="stretch", help="Export all completed subdomains", icon=":material/bar_chart:"):
             try:
                 output_path = run_async(export_all_async())
+                st.session_state.last_export_path = output_path
                 st.toast("Successfully exported", icon=":material/check_circle:")
             except Exception as e:
                 st.toast("Export failed", icon=":material/error:")
@@ -996,22 +1036,19 @@ def main() -> None:
                     sname        = pipeline.get("subdomain_name", key)
                     domain       = pipeline.get("domain", "")
                     progress     = pipeline.get("progress", 0.0)
-                    step         = pipeline.get("step", "m2").upper()
+                    step         = pipeline.get("step", "d1").upper()
                     message      = pipeline.get("message", "")
 
                     status_cfg = {
+                        "queued": (status_icon("pending", 14), "#94a3b8"),
                         "running": (status_icon("running", 14), "#3b82f6"),
                         "done": (status_icon("done", 14), "#22c55e"),
                         "failed": (status_icon("failed", 14), "#ef4444"),
                     }.get(status, (status_icon("pending", 14), "#6b7280"))
                     s_icon, s_color = status_cfg
 
-                    # Stage labels for the 4-step pipeline
                     STAGE_LABELS = {
-                        "m2": "Tool Discovery",
-                        "m3": "Feature Discovery",
-                        "m4": "Sub-feature Discovery",
-                        "m5": "Matrix Population",
+                        "d1": "Tool Ranking",
                     }
                     step_label = STAGE_LABELS.get(step.lower(), step)
 
@@ -1029,8 +1066,8 @@ def main() -> None:
                                 unsafe_allow_html=True,
                             )
 
-                        if status == "running":
-                            st.progress(progress, text=f"[{step}] {step_label}")
+                        if status in ("running", "queued"):
+                            st.progress(progress, text=f"[{step}] {step_label}" if status == "running" else "Waiting in queue...")
                             if message:
                                 msg_svg = icon_html("message", "ui", 12)
                                 st.markdown(
@@ -1073,11 +1110,11 @@ def main() -> None:
             st.markdown("")
             cc1, cc2 = st.columns(2)
             with cc1:
-                if st.button("Clear Completed / Failed", use_container_width=True, icon=":material/delete:"):
+                if st.button("Clear Completed / Failed", width="stretch", icon=":material/delete:"):
                     cleanup_completed_pipelines()
                     st.rerun()
             with cc2:
-                if st.button("Refresh Now", use_container_width=True, icon=":material/refresh:"):
+                if st.button("Refresh Now", width="stretch", icon=":material/refresh:"):
                     sync_pipeline_state()
                     st.rerun()
 
@@ -1100,8 +1137,316 @@ def main() -> None:
             render_log_panel()
 
     else:
-        st.markdown(f"# {current_nav}")
-        st.info("This technique module will be added in a future update!")
+        trophies_svg = icon_html("emoji_events", "actions", 32)
+        st.markdown(f"<h1 style='margin-bottom:0px; padding-bottom:8px;'>{trophies_svg} Subdomain Tool Rankings</h1>", unsafe_allow_html=True)
+        st.markdown("Rank tools within each subdomain based on feature coverage and market presence.")
+        
+        if st.session_state.status_message:
+            msg = st.session_state.status_message
+            st.toast(msg)
+            st.session_state.status_message = ""
+        
+        from db.subdomain_store import get_all_t2_subdomain_rankings, get_t2_subdomain_tools, get_t2_subdomain_ranking, get_eligible_subdomains
+        
+        with st.spinner("Loading eligible subdomains..."):
+            eligible = run_async(get_eligible_subdomains())
+            t2_rankings = run_async(get_all_t2_subdomain_rankings())
+        
+        sync_pipeline_state()
+        
+        pending_action = st.session_state.pop("_pending_t2_action", None)
+        
+        if pending_action:
+            action_type = pending_action[0]
+            
+            if action_type == "run_subdomain":
+                subdomain_id, subdomain_name = pending_action[1], pending_action[2]
+                st.session_state._pending_t2_pipeline = (subdomain_id, subdomain_name)
+                st.rerun()
+            elif action_type == "export_t2":
+                subdomain_id, subdomain_name = pending_action[1], pending_action[2]
+                try:
+                    output_path = run_async(export_t2_subdomain_async(subdomain_id, subdomain_name))
+                    st.session_state.last_export_path = output_path
+                    st.toast("Successfully exported", icon=":material/check_circle:")
+                except Exception as e:
+                    st.toast(f"Export failed: {e}", icon=":material/error:")
+            elif action_type == "export_all_t2":
+                try:
+                    output_path = run_async(export_all_t2_async())
+                    st.session_state.last_export_path = output_path
+                    st.toast("Successfully exported", icon=":material/check_circle:")
+                except Exception as e:
+                    st.toast(f"Export failed: {e}", icon=":material/error:")
+        
+        tab1, tab2, tab3 = st.tabs([":material/folder: Explorer", ":material/play_arrow: Active Pipelines", ":material/description: Logs"])
+        
+        with tab1:
+            hcol1, hcol2, hcol3, hcol4 = st.columns([2, 1, 1, 1])
+            
+            with hcol1:
+                st.markdown(
+                    "<p style='font-size:13px; color:#64748b; margin:6px 0 0;'>"
+                    f"{len(eligible)} subdomains have tools ready for ranking."
+                    "</p>",
+                    unsafe_allow_html=True,
+                )
+            
+            with hcol2:
+                auto_refresh_t2 = st.toggle("Auto (3s)", value=False, key="auto_refresh_t2")
+            
+            with hcol3:
+                if st.button("Refresh", width="stretch", icon=":material/refresh:"):
+                    st.rerun()
+                    
+            with hcol4:
+                if st.button("Export All", width="stretch", icon=":material/download:"):
+                    st.session_state._pending_t2_action = ("export_all_t2",)
+                    st.rerun()
+            
+            st.markdown("<hr style='border-color:#1e2533; margin:8px 0;'>", unsafe_allow_html=True)
+            
+            col_tree, col_detail = st.columns([1, 1.8], gap="medium")
+            
+            with col_tree:
+                st.markdown(
+                    "<p style='font-size:11px; font-weight:700; letter-spacing:1px;"
+                    "color:#475569; text-transform:uppercase; margin-bottom:6px;"
+                    "text-align:left;'>Subdomains with Tools</p>",
+                    unsafe_allow_html=True,
+                )
+                
+                with st.container(height=750, border=False):
+                    t2_by_subdomain = {r["subdomain_id"]: r for r in t2_rankings}
+                    
+                    current_domain = None
+                    for sd in eligible:
+                        domain_name = sd.get("domain_name", "")
+                        subdomain_name = sd.get("name", "")
+                        subdomain_id = sd.get("id")
+                        tool_count = sd.get("tool_count", 0)
+                        
+                        if domain_name != current_domain:
+                            st.markdown(f"**{domain_name}**")
+                            current_domain = domain_name
+                        
+                        ranking = t2_by_subdomain.get(subdomain_id)
+                        db_status = ranking.get("status", "pending") if ranking else "pending"
+                        
+                        pipeline_key = f"t2_{subdomain_name}"
+                        running_info = st.session_state.running_pipelines.get(pipeline_key, {})
+                        if running_info.get("status") == "running":
+                            t2_status = "running"
+                        else:
+                            t2_status = db_status
+                        
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        
+                        with col1:
+                            btn_icon = ":material/sync:" if t2_status == "running" else None
+                            if st.button(subdomain_name, key=f"t2_sd_{subdomain_id}", width="stretch", icon=btn_icon):
+                                st.session_state.t2_selected_subdomain = subdomain_id
+                                st.session_state.t2_selected_subdomain_name = subdomain_name
+                        
+                        with col2:
+                            status_icon_svg = status_icon(t2_status, 14)
+                            st.markdown(f"<span style='font-size:14px;'>{status_icon_svg}</span>", unsafe_allow_html=True)
+                        
+                        with col3:
+                            if t2_status == "running":
+                                st.button("...", key=f"t2_run_btn_{subdomain_id}", disabled=True, width="stretch")
+                            elif t2_status == "done":
+                                if st.button("Rerun", key=f"t2_rerun_{subdomain_id}", width="stretch"):
+                                    st.session_state._pending_t2_action = ("run_subdomain", subdomain_id, subdomain_name)
+                                    st.rerun()
+                            else:
+                                if st.button("Run", key=f"t2_run_{subdomain_id}", width="stretch"):
+                                    st.session_state._pending_t2_action = ("run_subdomain", subdomain_id, subdomain_name)
+                                    st.rerun()
+            
+            with col_detail:
+                st.markdown(
+                    "<p style='font-size:11px; font-weight:700; letter-spacing:1px;"
+                    "color:#475569; text-transform:uppercase; margin-bottom:6px;"
+                    "text-align:left; padding-left:4px;'>Ranked Tools</p>",
+                    unsafe_allow_html=True,
+                )
+                
+                selected_id = st.session_state.get("t2_selected_subdomain")
+                selected_name = st.session_state.get("t2_selected_subdomain_name")
+                
+                if selected_id:
+                    ranking = run_async(get_t2_subdomain_ranking(selected_id))
+                    tools = run_async(get_t2_subdomain_tools(selected_id))
+                    
+                    hdr_col1, hdr_col2 = st.columns([3, 1])
+                    with hdr_col1:
+                        st.markdown(f"**{selected_name}**")
+                    with hdr_col2:
+                        if tools:
+                            if st.button("Export", key=f"t2_exp_{selected_id}", icon=":material/download:", width="stretch"):
+                                st.session_state._pending_t2_action = ("export_t2", selected_id, selected_name)
+                                st.rerun()
+                    
+                    if ranking:
+                        r_status = ranking.get("status", "pending")
+                        
+                        pipeline_key = f"t2_{selected_name}"
+                        running_info = st.session_state.running_pipelines.get(pipeline_key, {})
+                        if running_info.get("status") == "running":
+                            r_status = "running"
+                        
+                        status_icon_svg = status_icon(r_status, 16)
+                        status_color = {"done": "#22c55e", "running": "#3b82f6", "failed": "#ef4444"}.get(r_status, "#6b7280")
+                        st.markdown(
+                            f"<p style='font-size:13px;'>Status: <span style='color:{status_color}; font-weight:600;'>{status_icon_svg} {r_status.capitalize()}</span></p>",
+                            unsafe_allow_html=True
+                        )
+                    
+                    if tools:
+                        import pandas as pd
+                        df_data = []
+                        for i, t in enumerate(sorted(tools, key=lambda x: x.get("composite_score", 0), reverse=True)):
+                            score = t.get("composite_score", 0)
+                            df_data.append({
+                                "#": i + 1,
+                                "Tool": f"{t.get('vendor', '')} {t.get('product_name', '')}",
+                                "Type": t.get("tool_type", "").capitalize(),
+                                "Score": f"{score:.1f}",
+                            })
+                        
+                        if df_data:
+                            df = pd.DataFrame(df_data)
+                            st.dataframe(
+                                df,
+                                width="stretch",
+                                hide_index=True,
+                                height=35 * len(df_data) + 40,
+                            )
+                else:
+                    st.info("Select a subdomain from the list to view ranked tools.")
+            
+            if auto_refresh_t2:
+                st.markdown("""
+                <script>
+                setTimeout(function() {
+                    var refreshBtn = window.parent.document.querySelector('[data-testid="stBaseButton-secondary"]');
+                    if (refreshBtn && refreshBtn.innerText.includes('Refresh')) {
+                        refreshBtn.click();
+                    } else {
+                        window.parent.location.reload();
+                    }
+                }, 3000);
+                </script>
+                """, unsafe_allow_html=True)
+        
+        with tab2:
+            sync_pipeline_state()
+            
+            running_pipelines = {
+                k: v for k, v in st.session_state.running_pipelines.items()
+                if k.startswith("t2_")
+            }
+            
+            if not running_pipelines:
+                st.info("No Technique 2 pipelines are currently running. Start one from the Explorer tab.")
+            else:
+                for key, pipeline in list(running_pipelines.items()):
+                    status = pipeline.get("status", "pending")
+                    subdomain = pipeline.get("subdomain", key)
+                    progress = pipeline.get("progress", 0.0)
+                    step = pipeline.get("step", "d1").upper()
+                    message = pipeline.get("message", "")
+                    
+                    status_cfg = {
+                        "running": (status_icon("running", 14), "#3b82f6"),
+                        "done": (status_icon("done", 14), "#22c55e"),
+                        "failed": (status_icon("failed", 14), "#ef4444"),
+                    }.get(status, (status_icon("pending", 14), "#6b7280"))
+                    s_icon, s_color = status_cfg
+                    
+                    with st.container(border=True):
+                        h1, h2 = st.columns([4, 1])
+                        with h1:
+                            st.markdown(f"**{subdomain}**", unsafe_allow_html=True)
+                        with h2:
+                            st.markdown(f"{s_icon} {status.capitalize()}", unsafe_allow_html=True)
+                        
+                        if status in ("running", "queued"):
+                            st.progress(progress, text=f"[{step}] {message}" if status == "running" else "Waiting in queue...")
+        
+        with tab3:
+            render_log_panel()
+    
+    pending_pipeline = st.session_state.pop("_pending_t2_pipeline", None)
+    if pending_pipeline:
+        subdomain_id, subdomain_name = pending_pipeline
+        event_queue = st.session_state.event_queue
+        if not event_queue:
+            from orchestrator.subdomain_graph import create_event_queue as create_t2_event_queue
+            event_queue = create_t2_event_queue()
+            st.session_state.event_queue = event_queue
+        
+        pipeline_key = f"t2_{subdomain_name}"
+        
+        initial = {
+            "subdomain": subdomain_name,
+            "progress": 0.0,
+            "step": "d1",
+            "message": "Queued...",
+            "status": "queued",
+        }
+        with _PIPELINE_LOCK:
+            _PIPELINE_PROGRESS[pipeline_key] = initial
+        st.session_state.running_pipelines[pipeline_key] = dict(initial)
+        
+        def _run_t2_in_thread(_subdomain_id=subdomain_id, _subdomain_name=subdomain_name, _queue=event_queue, _pkey=pipeline_key):
+            with _PIPELINE_LOCK:
+                if _pkey in _PIPELINE_PROGRESS:
+                    _PIPELINE_PROGRESS[_pkey]["status"] = "running"
+                    _PIPELINE_PROGRESS[_pkey]["message"] = "Starting..."
+            import asyncio
+            from orchestrator.subdomain_graph import run_subdomain_pipeline
+            
+            async def _run_with_progress():
+                task = asyncio.create_task(run_subdomain_pipeline(_subdomain_id, _subdomain_name, _queue))
+                
+                while not task.done():
+                    try:
+                        event = await asyncio.wait_for(_queue.get(), timeout=settings.event_timeout)
+                        if event.subdomain == _subdomain_name:
+                            with _PIPELINE_LOCK:
+                                if _pkey in _PIPELINE_PROGRESS:
+                                    _PIPELINE_PROGRESS[_pkey].update({
+                                        "progress": event.progress_pct,
+                                        "step": event.step,
+                                        "message": event.message,
+                                        "status": "running",
+                                    })
+                    except asyncio.TimeoutError:
+                        continue
+                
+                with _PIPELINE_LOCK:
+                    if _pkey in _PIPELINE_PROGRESS:
+                        _PIPELINE_PROGRESS[_pkey]["status"] = "done"
+            
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(_run_with_progress())
+            except Exception as exc:
+                logger.error(f"T2 Pipeline failed for {_subdomain_name}: {exc}")
+                with _PIPELINE_LOCK:
+                    if _pkey in _PIPELINE_PROGRESS:
+                        _PIPELINE_PROGRESS[_pkey]["status"] = "failed"
+            finally:
+                loop.close()
+        
+        future = _EXECUTOR.submit(_run_t2_in_thread)
+        _PIPELINE_FUTURES[pipeline_key] = future
+        
+        st.toast(f"Started ranking for {subdomain_name}")
+        st.rerun()
 
 
 if __name__ == "__main__":

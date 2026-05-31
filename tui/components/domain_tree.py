@@ -169,7 +169,7 @@ def render_domain_row(domain: str, subdomains: list[dict], is_expanded: bool) ->
     col_btn, col_badge = st.columns([5, 1.2], gap="small")
 
     with col_btn:
-        if st.button(label, key=f"click_domain_{domain}", use_container_width=True, type="tertiary", icon=mat_icon):
+        if st.button(label, key=f"click_domain_{domain}", width="stretch", type="tertiary", icon=mat_icon):
             set_detail_item(f"domain_{domain}")
             toggle_domain(domain)
             st.rerun()
@@ -224,7 +224,7 @@ def render_subdomain_rows(domain: str, subdomains: list[dict], search_query: str
                 st.rerun()
 
         with col_btn:
-            if st.button(label, key=f"click_{item_key}", use_container_width=True, type="tertiary", icon=status_mat):
+            if st.button(label, key=f"click_{item_key}", width="stretch", type="tertiary", icon=status_mat):
                 set_detail_item(f"subdomain_{item_key}")
                 st.rerun()
 

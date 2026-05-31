@@ -43,28 +43,28 @@ def render_bulk_action_bar(
     with col1:
         if st.button(
             f"{play_svg} Run Selected", key="bulk_run_selected",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state._bulk_action = "bulk_run"
 
     with col2:
         if st.button(
             f"{chart_svg} Export Selected", key="bulk_export_selected",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state._bulk_action = "bulk_export"
 
     with col3:
         if st.button(
             f"{trash_svg} Clear Selected", key="bulk_clear_selected",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state._bulk_action = "bulk_clear"
 
     with col4:
         if st.button(
             f"{close_svg} Clear Selection", key="bulk_deselect",
-            use_container_width=True,
+            width="stretch",
         ):
             deselect_all()
             st.rerun()

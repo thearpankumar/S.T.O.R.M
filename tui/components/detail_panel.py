@@ -274,7 +274,7 @@ def render_subdomain_detail(
                 on_clear(subdomain_id)
 
     with row2_cols[1]:
-        if st.button("Copy Name", key="sd_copy", use_container_width=True, icon=":material/content_copy:"):
+        if st.button("Copy Name", key="sd_copy", width="stretch", icon=":material/content_copy:"):
             st.session_state._clipboard = subdomain_name
             st.success(f"Copied: {subdomain_name}")
 

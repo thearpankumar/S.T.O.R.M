@@ -42,7 +42,7 @@ def render_context_menu(
                         f"{icon_svg} {action.label}",
                         key=f"ctx_{action.id}_{target}",
                         disabled=action.disabled,
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         selected_action = action
 
@@ -55,7 +55,7 @@ def render_context_menu(
                     f"{icon_svg} {action.label}",
                     key=f"ctx_{action.id}_{target}",
                     disabled=action.disabled,
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     selected_action = action
 
@@ -68,7 +68,7 @@ def render_context_menu(
                     f"{icon_svg} {action.label}",
                     key=f"ctx_{action.id}_{target}",
                     disabled=action.disabled,
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     if action.confirm:
                         st.session_state._confirm_action = action.id
@@ -91,12 +91,12 @@ def render_action_confirmation(
     close_svg = icon_html("close", "ui", 14)
     col1, col2 = st.columns(2)
     with col1:
-        if st.button(f"{check_svg} Confirm", use_container_width=True, type="primary"):
+        if st.button(f"{check_svg} Confirm", width="stretch", type="primary"):
             if on_confirm:
                 on_confirm()
             return True
     with col2:
-        if st.button(f"{close_svg} Cancel", use_container_width=True):
+        if st.button(f"{close_svg} Cancel", width="stretch"):
             if on_cancel:
                 on_cancel()
             return False
@@ -146,7 +146,7 @@ def render_floating_menu(
             f"{icon_svg} {action.label}",
             key=f"float_{action.id}_{target}",
             disabled=action.disabled,
-            use_container_width=True,
+            width="stretch",
         ):
             return action
 

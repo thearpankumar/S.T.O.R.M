@@ -47,6 +47,19 @@ class Settings(BaseSettings):
     event_queue_maxsize: int = Field(default=1000, ge=100, le=10000)
     event_timeout: float = Field(default=0.5, ge=0.1, le=5.0)
 
+    t2_excel_output_path: str = Field(default="output/technique2_domain_rankings.xlsx")
+    t2_max_enterprise_tools: int = Field(default=15, ge=5, le=30)
+    t2_max_opensource_tools: int = Field(default=5, ge=2, le=10)
+    t2_max_features: int = Field(default=10, ge=5, le=15)
+    t2_max_subfeatures_per_feature: int = Field(default=6, ge=2, le=10)
+    t2_max_sf_batch_size: int = Field(default=8, ge=2, le=20)
+    t2_enable_web_search_ranking: bool = Field(default=True)
+
+    t2_weight_subdomain_presence: float = Field(default=0.40, ge=0.0, le=1.0)
+    t2_weight_feature_coverage: float = Field(default=0.20, ge=0.0, le=1.0)
+    t2_weight_market_presence: float = Field(default=0.20, ge=0.0, le=1.0)
+    t2_weight_rank_distribution: float = Field(default=0.20, ge=0.0, le=1.0)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

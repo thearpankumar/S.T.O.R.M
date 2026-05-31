@@ -100,8 +100,8 @@ dmypy.json
 
 # Linux
 *~
-output/*cybersec_matrix.xlsx*
-
+output/
+.planning/
 # Windows
 Thumbs.db
 Desktop.ini
