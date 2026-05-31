@@ -9,40 +9,45 @@ An AI-powered research pipeline that automates cybersecurity tool discovery, fea
 
 ## Overview
 
-Cybersec Research Agent discovers subdomains within 19 cybersecurity domains, identifies relevant enterprise and open-source tools, extracts differentiating features, and generates structured Excel comparison matrices.
+The Cybersec Research Agent is an advanced analytical engine that systematically investigates 19 cybersecurity domains. It utilizes multi-agent LLM pipelines across three distinct research techniques to discover subdomains, rank industry tools, extract differentiating features, and classify them against industry frameworks (NIST CSF 2.0).
 
-## AI Pipeline
+## Research Techniques
+
+The agent employs three distinct pipelines to analyze the cybersecurity tooling landscape at varying depths.
+
+### Technique 1: Subdomain Feature Matrix (M1–M5)
+Focuses on granular analysis at the subdomain level. It discovers specific subdomains, identifies relevant tools, extracts granular features, and generates comprehensive Excel comparison matrices.
 
 ```mermaid
 flowchart LR
-    subgraph M1["M1"]
+    subgraph M1["M1: Discovery"]
         direction TB
         D1[("Domain")] --> WS1["Web Search"]
         WS1 --> L1["LLM + Consensus"]
         L1 --> SD[("Subdomains")]
     end
 
-    subgraph M2["M2"]
+    subgraph M2["M2: Tooling"]
         direction TB
         SD2[("Subdomain")] --> WS2["Web Search"]
         WS2 --> L2["LLM"]
         L2 --> T[("Tools")]
     end
 
-    subgraph M3["M3"]
+    subgraph M3["M3: Features"]
         direction TB
         T3[("Tools")] --> WS3["Web Search"]
         WS3 --> L3["LLM"]
         L3 --> F[("Features")]
     end
 
-    subgraph M4["M4"]
+    subgraph M4["M4: Expansion"]
         direction TB
         F4[("Features")] --> L4["Parallel LLMs"]
         L4 --> SF[("Sub-features")]
     end
 
-    subgraph M5["M5"]
+    subgraph M5["M5: Matrix"]
         direction TB
         IN["Tools + Sub-features"] --> L5["Batch LLM"]
         L5 --> MX[("Matrix")]
@@ -50,6 +55,60 @@ flowchart LR
 
     M1 --> M2 --> M3 --> M4 --> M5
     M5 --> EXCEL[("Excel Export")]
+```
+
+### Technique 2: Domain-Level Tool Rankings (D1–D5)
+Operates at the broader domain level. It aggregates and ranks enterprise and open-source tools across an entire domain, generating high-level features and a unified domain matrix.
+
+```mermaid
+flowchart LR
+    subgraph D1["D1: Aggregation & Ranking"]
+        direction TB
+        D[("Domain")] --> AGG["Tool Aggregation"]
+        AGG --> RANK["Rank Enterprise & OSS"]
+    end
+    
+    subgraph D2["D2: Domain Features"]
+        direction TB
+        T[("Ranked Tools")] --> FA["Feature Aggregation"]
+    end
+    
+    subgraph D3["D3: Subfeatures"]
+        direction TB
+        FA --> SG["Generate Subfeatures"]
+    end
+    
+    subgraph D4["D4: Matrix"]
+        direction TB
+        SG --> MP["Populate Matrix"]
+    end
+    
+    D1 --> D2 --> D3 --> D4
+    D4 --> EXCEL2[("Excel Export")]
+```
+
+### Technique 3: Cross-Domain Tool Classification (S1–S3)
+Provides global insights by deduplicating tools across all domains and classifying them according to the NIST Cybersecurity Framework (Identify, Protect, Detect, Respond, Recover, Govern).
+
+```mermaid
+flowchart LR
+    subgraph S1["S1: Deduplication"]
+        direction TB
+        DB[("T1 Tools DB")] --> DEDUP["SQL Deduplication"]
+    end
+    
+    subgraph S2["S2: Classification"]
+        direction TB
+        DEDUP --> LLM["LLM NIST Classification"]
+    end
+    
+    subgraph S3["S3: Synthesis"]
+        direction TB
+        LLM --> SUMM["Executive Summary"]
+    end
+    
+    S1 --> S2 --> S3
+    S3 --> EXCEL3[("Excel Export")]
 ```
 
 ## Architecture
@@ -201,13 +260,12 @@ The agent covers 19 cybersecurity domains:
 
 ## Output
 
-The pipeline generates:
+The pipeline generates distinct Excel reports for each research technique, driven by a unified local database:
 
-- **`data/agent.db`** - SQLite database with all discovered entities
-- **`output/cybersec_matrix.xlsx`** - Formatted Excel workbook containing:
-  - One sheet per subdomain with tool-feature matrices
-  - Support levels: ✔ (Full), Partial, ✘ (None)
-  - Summary and legend sheets
+- **`data/agent.db`** - Comprehensive SQLite database storing all discovered entities, rankings, and cross-domain classifications.
+- **`output/cybersec_matrix.xlsx`** (Technique 1) - Detailed workbook containing tool-feature matrices per subdomain, with support levels: ✔ (Full), Partial, ✘ (None).
+- **`output/technique2_domain_rankings.xlsx`** (Technique 2) - Domain-level tool rankings and broader feature comparisons.
+- **`output/technique3_tool_classification.xlsx`** (Technique 3) - Global cross-domain tool classification mapping (NIST CSF 2.0), interactive dashboard, and executive summary.
 
 ## License
 
