@@ -79,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_tools_subdomain ON tools(subdomain_id);
 CREATE INDEX IF NOT EXISTS idx_features_subdomain ON features(subdomain_id);
 CREATE INDEX IF NOT EXISTS idx_subfeatures_feature ON subfeatures(feature_id);
 CREATE INDEX IF NOT EXISTS idx_matrix_subdomain ON matrix_cells(subdomain_id);
+CREATE INDEX IF NOT EXISTS idx_matrix_tool ON matrix_cells(tool_id);
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- TECHNIQUE 2: Domain-level tool ranking and comparison
@@ -245,4 +246,95 @@ CREATE INDEX IF NOT EXISTS idx_t3_tools_nist ON t3_tools(nist_primary_function);
 CREATE INDEX IF NOT EXISTS idx_t3_tool_subdomains_tool ON t3_tool_subdomains(t3_tool_id);
 CREATE INDEX IF NOT EXISTS idx_t3_tool_subdomains_subdomain ON t3_tool_subdomains(subdomain_id);
 CREATE INDEX IF NOT EXISTS idx_t3_tool_subdomains_domain ON t3_tool_subdomains(domain_id);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TECHNIQUE 4: Tool-Level Cross-Domain Analysis
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Canonical tool registry (separate from T3)
+CREATE TABLE IF NOT EXISTS t4_tools (
+    id INTEGER PRIMARY KEY,
+    vendor TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    tool_type TEXT CHECK(tool_type IN ('enterprise', 'opensource', 'freemium', 'unknown')),
+    license_model TEXT,
+    url TEXT,
+    description TEXT,
+    source_type TEXT DEFAULT 't1',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(vendor, product_name)
+);
+
+-- Tool → Subdomain membership
+CREATE TABLE IF NOT EXISTS t4_tool_subdomains (
+    id INTEGER PRIMARY KEY,
+    t4_tool_id INTEGER REFERENCES t4_tools(id) ON DELETE CASCADE,
+    subdomain_id INTEGER REFERENCES subdomains(id),
+    domain_id INTEGER REFERENCES domains(id),
+    t1_tool_id INTEGER REFERENCES tools(id),
+    UNIQUE(t4_tool_id, subdomain_id)
+);
+
+-- Per-tool domain aggregate
+CREATE TABLE IF NOT EXISTS t4_tool_domains (
+    id INTEGER PRIMARY KEY,
+    t4_tool_id INTEGER UNIQUE REFERENCES t4_tools(id) ON DELETE CASCADE,
+    primary_domain_id INTEGER REFERENCES domains(id),
+    domain_count INTEGER DEFAULT 0,
+    subdomain_count INTEGER DEFAULT 0,
+    domain_list TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Per-tool feature support aggregate
+CREATE TABLE IF NOT EXISTS t4_tool_features (
+    id INTEGER PRIMARY KEY,
+    t4_tool_id INTEGER UNIQUE REFERENCES t4_tools(id) ON DELETE CASCADE,
+    total_subfeatures INTEGER DEFAULT 0,
+    supported_subfeatures INTEGER DEFAULT 0,
+    partial_subfeatures INTEGER DEFAULT 0,
+    unsupported_subfeatures INTEGER DEFAULT 0,
+    support_rate REAL DEFAULT 0.0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Per-tool, per-subdomain feature breakdown
+CREATE TABLE IF NOT EXISTS t4_tool_subdomain_features (
+    id INTEGER PRIMARY KEY,
+    t4_tool_id INTEGER REFERENCES t4_tools(id) ON DELETE CASCADE,
+    subdomain_id INTEGER REFERENCES subdomains(id),
+    domain_id INTEGER REFERENCES domains(id),
+    total_subfeatures INTEGER DEFAULT 0,
+    supported_subfeatures INTEGER DEFAULT 0,
+    partial_subfeatures INTEGER DEFAULT 0,
+    support_pct REAL DEFAULT 0.0,
+    support_level TEXT,
+    UNIQUE(t4_tool_id, subdomain_id)
+);
+
+-- Pipeline run tracker
+CREATE TABLE IF NOT EXISTS t4_analysis_runs (
+    id INTEGER PRIMARY KEY,
+    status TEXT DEFAULT 'pending'
+        CHECK(status IN ('pending', 'running', 'done', 'failed')),
+    total_tools INTEGER DEFAULT 0,
+    processed_tools INTEGER DEFAULT 0,
+    enriched_tools INTEGER DEFAULT 0,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- T4 Indexes
+CREATE INDEX IF NOT EXISTS idx_t4_tools_lookup ON t4_tools(vendor, product_name);
+CREATE INDEX IF NOT EXISTS idx_t4_tools_type ON t4_tools(tool_type);
+CREATE INDEX IF NOT EXISTS idx_t4_tools_license ON t4_tools(license_model);
+CREATE INDEX IF NOT EXISTS idx_t4_tool_subdomains_tool ON t4_tool_subdomains(t4_tool_id);
+CREATE INDEX IF NOT EXISTS idx_t4_tool_subdomains_subdomain ON t4_tool_subdomains(subdomain_id);
+CREATE INDEX IF NOT EXISTS idx_t4_tool_subdomains_t1_tool ON t4_tool_subdomains(t1_tool_id);
+CREATE INDEX IF NOT EXISTS idx_t4_tool_domains_tool ON t4_tool_domains(t4_tool_id);
+CREATE INDEX IF NOT EXISTS idx_t4_tool_features_tool ON t4_tool_features(t4_tool_id);
+CREATE INDEX IF NOT EXISTS idx_t4_tool_sd_features_tool ON t4_tool_subdomain_features(t4_tool_id);
+CREATE INDEX IF NOT EXISTS idx_t4_tool_sd_features_subdomain ON t4_tool_subdomain_features(subdomain_id);
 """
