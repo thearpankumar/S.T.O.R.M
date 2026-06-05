@@ -7,6 +7,7 @@ from typing import TypeVar
 import logging
 
 from botocore.exceptions import ClientError, ConnectTimeoutError
+import concurrent.futures
 
 from config.settings import settings
 
@@ -15,6 +16,7 @@ T = TypeVar("T", bound=BaseModel)
 
 _bedrock_client = None
 _client_lock = threading.Lock()
+_llm_executor = concurrent.futures.ThreadPoolExecutor(max_workers=64, thread_name_prefix="BedrockLLM")
 
 
 def get_bedrock_client():
@@ -107,7 +109,7 @@ async def structured_call(
     for attempt in range(max_retries):
         try:
             json_str = await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(None, _sync_call),
+                asyncio.get_running_loop().run_in_executor(_llm_executor, _sync_call),
                 timeout=120.0
             )
             
@@ -171,7 +173,7 @@ async def simple_call(
     
     for attempt in range(max_retries):
         try:
-            return await asyncio.get_running_loop().run_in_executor(None, _sync_call)
+            return await asyncio.get_running_loop().run_in_executor(_llm_executor, _sync_call)
         except ClientError as e:
             if is_throttling_error(e):
                 await asyncio.sleep(2 ** attempt)

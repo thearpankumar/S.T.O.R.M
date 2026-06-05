@@ -62,11 +62,31 @@ class Settings(BaseSettings):
 
     # ── Technique 3 — Cross-domain tool classification ────────────────────────
     t3_excel_output_path: str = Field(default="output/technique3_tool_classification.xlsx")
-    # Number of tools sent in a single NIST classification LLM call.
-    # At 20 tools/call and 2,000 tools, that is ~100 parallel-batched calls.
     t3_nist_batch_size: int = Field(default=20, ge=5, le=50)
-    # When True, use LLM to assign NIST functions; when False, use rule-based domain mapping only.
     t3_enable_nist_llm: bool = Field(default=True)
+    
+    # ── Technique 4 — Tool-Level Analysis ─────────────────────────────────────
+    t4_excel_output_path: str = Field(default="output/technique4_tool_analysis.xlsx")
+    t4_llm_batch_size: int = Field(default=50, ge=10, le=100)
+    t4_enable_web_enrichment: bool = Field(default=True)
+    t4_min_domain_count: int = Field(default=1, ge=1, le=19)
+
+    # ── Technique 5 — Score Card ───────────────────────────────────────────────
+    t5_excel_output_path: str = Field(default="output/technique5_scorecard.xlsx")
+    t5_enable_llm_insights: bool = Field(default=True)
+    t5_llm_batch_size: int = Field(default=20, ge=5, le=50)
+    t5_max_llm_insights: int = Field(default=50, ge=0, le=1000)
+
+    # Scoring dimension weights (must sum to ~1.0)
+    t5_weight_feature_coverage: float = Field(default=0.30, ge=0.0, le=1.0)
+    t5_weight_domain_breadth: float = Field(default=0.20, ge=0.0, le=1.0)
+    t5_weight_nist_alignment: float = Field(default=0.20, ge=0.0, le=1.0)
+    t5_weight_market_maturity: float = Field(default=0.15, ge=0.0, le=1.0)
+    t5_weight_ranking_signal: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    # Minimum composite score to appear in Top-N sheet
+    t5_top_n_threshold: int = Field(default=50, ge=0, le=100)
+    t5_top_n_count: int = Field(default=30, ge=5, le=100)
 
     model_config = SettingsConfigDict(
         env_file=".env",

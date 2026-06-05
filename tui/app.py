@@ -64,6 +64,9 @@ def get_pipeline_lock() -> threading.Lock:
 _PIPELINE_PROGRESS = get_pipeline_progress()
 _PIPELINE_LOCK = get_pipeline_lock()
 
+# Per-pipeline stop signals — set() to request graceful cancellation
+_PIPELINE_STOP_FLAGS: dict[str, threading.Event] = {}
+
 
 def init_session_state() -> None:
     import copy
@@ -89,27 +92,27 @@ def init_session_state() -> None:
             st.session_state[key] = copy.deepcopy(value)
 
 
+_app_thread_locals = threading.local()
+
 def get_event_loop() -> asyncio.AbstractEventLoop:
     try:
         loop = asyncio.get_running_loop()
         return loop
     except RuntimeError:
-        loop = asyncio.new_event_loop()
+        loop = getattr(_app_thread_locals, "loop", None)
+        if loop is None or loop.is_closed():
+            loop = asyncio.new_event_loop()
+            _app_thread_locals.loop = loop
         asyncio.set_event_loop(loop)
         return loop
-
 
 def run_async(coro: Coroutine[Any, Any, T]) -> T:
     try:
         loop = asyncio.get_running_loop()
         return loop.run_until_complete(coro)
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+        loop = get_event_loop()
+        return loop.run_until_complete(coro)
 
 
 async def init_app_async() -> None:
@@ -524,7 +527,13 @@ def render_sidebar() -> str:
         st.markdown("---")
         nav_selection = st.selectbox(
             "Techniques",
-            options=["Technique 1", "Technique 2", "Technique 3"],
+            options=[
+                "Feature Matrices (T1)",
+                "Domain Rankings (T2)",
+                "NIST CSF Mapping (T3)",
+                "Cross-Domain Analysis (T4)",
+                "Strategic Score Card (T5)"
+            ],
             index=0,
             label_visibility="collapsed",
             filter_mode=None,
@@ -538,8 +547,12 @@ def render_sidebar() -> str:
         if last_export:
             display_output = last_export
         else:
-            if nav_selection == "Technique 2":
+            if nav_selection == "Domain Rankings (T2)":
                 display_output = settings.excel_output_path.replace(".xlsx", "_T2_Rankings.xlsx")
+            elif nav_selection == "Cross-Domain Analysis (T4)":
+                display_output = settings.t4_excel_output_path
+            elif nav_selection == "Strategic Score Card (T5)":
+                display_output = settings.t5_excel_output_path
             else:
                 display_output = settings.excel_output_path
         st.caption(f"Output: `{display_output}`")
@@ -963,7 +976,7 @@ def main() -> None:
     render_documentation_modal()
     render_settings_modal()
 
-    if current_nav == "Technique 1":
+    if current_nav == "Feature Matrices (T1)":
         search_svg = icon_html("search", "actions", 32)
         st.markdown(f"<h1 style='margin-bottom:0px; padding-bottom:8px;'>{search_svg} Cybersec Research Agent</h1>", unsafe_allow_html=True)
         st.markdown("Discover, analyze, and compare cybersecurity tools across domains.")
@@ -1059,7 +1072,7 @@ def main() -> None:
 
             running_pipelines = {
                 k: v for k, v in st.session_state.running_pipelines.items()
-                if not k.startswith("t2_")
+                if not k.startswith("t2_") and not k.startswith("t3_") and not k.startswith("t4_")
             }
 
             if not running_pipelines:
@@ -1160,7 +1173,7 @@ def main() -> None:
         with tab3:
             render_log_panel()
 
-    elif current_nav == "Technique 2":
+    elif current_nav == "Domain Rankings (T2)":
         trophies_svg = icon_html("emoji_events", "actions", 32)
         st.markdown(f"<h1 style='margin-bottom:0px; padding-bottom:8px;'>{trophies_svg} Subdomain Tool Rankings</h1>", unsafe_allow_html=True)
         st.markdown("Rank tools within each subdomain based on feature coverage and market presence.")
@@ -1392,7 +1405,7 @@ def main() -> None:
         with tab3:
             render_log_panel()
 
-    elif current_nav == "Technique 3":
+    elif current_nav == "NIST CSF Mapping (T3)":
         # ── T3 header ─────────────────────────────────────────────────────────
         grid_svg = icon_html("grid_view", "actions", 32)
         st.markdown(f"<h1 style='margin-bottom:0px; padding-bottom:8px;'>{grid_svg} Tool Classification Matrix</h1>", unsafe_allow_html=True)
@@ -1793,6 +1806,470 @@ def main() -> None:
         with tab4:
             render_log_panel()
 
+    elif current_nav == "Cross-Domain Analysis (T4)":
+        analysis_svg = icon_html("analytics", "actions", 32)
+        st.markdown(f"<h1 style='margin-bottom:0px; padding-bottom:8px;'>{analysis_svg} Tool-Level Analysis</h1>", unsafe_allow_html=True)
+        st.markdown("Analyze cross-domain tools with license detection, feature support, and coverage metrics.")
+        
+        if st.session_state.status_message:
+            st.toast(st.session_state.status_message)
+            st.session_state.status_message = ""
+        
+        from db.t4_store import get_t4_tools_with_coverage, get_t4_stats, get_t4_tool_subdomain_features_list, get_t4_run_status
+        
+        with st.spinner("Loading tools..."):
+            t4_tools = run_async(get_t4_tools_with_coverage())
+            t4_stats = run_async(get_t4_stats())
+            t4_run = run_async(get_t4_run_status())
+        
+        sync_pipeline_state()
+        
+        pending_t4 = st.session_state.pop("_pending_t4_action", None)
+        if pending_t4:
+            action_type = pending_t4[0]
+            if action_type == "export_t4":
+                try:
+                    from excel.t4_bridge import export_t4_workbook
+                    output_path = run_async(export_t4_workbook())
+                    st.session_state.last_export_path = output_path
+                    st.toast("Excel exported successfully", icon=":material/check_circle:")
+                except Exception as e:
+                    st.toast(f"Export failed: {e}", icon=":material/error:")
+        
+        tab1, tab2, tab3 = st.tabs([":material/analytics: Explorer", ":material/play_arrow: Active Pipelines", ":material/description: Logs"])
+        
+        with tab1:
+            hcol1, hcol2, hcol3, hcol4 = st.columns([2, 1, 1, 1])
+            
+            with hcol1:
+                st.markdown(
+                    f"<p style='font-size:13px; color:#64748b; margin:6px 0 0;'>"
+                    f"{len(t4_tools)} tools analyzed across {t4_stats.get('multi_domain', 0)} domains."
+                    "</p>",
+                    unsafe_allow_html=True,
+                )
+            
+            with hcol2:
+                auto_refresh_t4 = st.toggle("Auto (3s)", value=False, key="auto_refresh_t4")
+            
+            with hcol3:
+                if st.button("Refresh", width="stretch", icon=":material/refresh:"):
+                    st.rerun()
+            
+            with hcol4:
+                if st.button("Export", width="stretch", icon=":material/download:"):
+                    st.session_state._pending_t4_action = ("export_t4",)
+                    st.rerun()
+            
+            st.markdown("<hr style='border-color:#1e2533; margin:8px 0;'>", unsafe_allow_html=True)
+            
+            fcol1, fcol2, fcol3 = st.columns(3)
+            with fcol1:
+                domain_filter = st.selectbox(
+                    "Domain",
+                    options=["All"] + list(CYBERSECURITY_DOMAINS),
+                    index=0,
+                    key="t4_domain_filter",
+                )
+            with fcol2:
+                type_filter = st.selectbox(
+                    "Type",
+                    options=["All", "Enterprise", "Open Source", "Freemium"],
+                    index=0,
+                    key="t4_type_filter",
+                )
+            with fcol3:
+                min_domains = st.slider(
+                    "Min Domains", 1, 19, 1,
+                    key="t4_min_domains"
+                )
+            
+            filter_domain = None if domain_filter == "All" else domain_filter
+            filter_type = None if type_filter == "All" else type_filter.lower().replace(" ", "_")
+            
+            filtered_tools = [
+                t for t in t4_tools
+                if (filter_domain is None or filter_domain in t.get("domain_list", []))
+                and (filter_type is None or t.get("tool_type", "unknown") == filter_type)
+                and t.get("domain_count", 0) >= min_domains
+            ]
+            
+            st.markdown(f"**{len(filtered_tools)} tools**")
+            
+            col_list, col_detail = st.columns([1.2, 1.8], gap="medium")
+            
+            with col_list:
+                if not filtered_tools:
+                    st.info("No tools match the filters.")
+                else:
+                    import pandas as pd
+                    rows = []
+                    for t in filtered_tools:
+                        rows.append({
+                            "ID": t.get("id"),
+                            "Vendor": t.get("vendor", ""),
+                            "Product": t.get("product_name", ""),
+                            "License": t.get("license_model", "Unknown"),
+                            "Domains": t.get("domain_count", 0),
+                            "Support": f"{t.get('support_rate', 0) * 100:.0f}%",
+                        })
+                    
+                    df = pd.DataFrame(rows)
+                    event = st.dataframe(
+                        df,
+                        width="stretch",
+                        hide_index=True,
+                        height=min(35 * len(rows) + 40, 400),
+                        on_select="rerun",
+                        selection_mode="single-row",
+                        key="t4_table",
+                    )
+                    sel_rows = event.selection.get("rows", []) if event and event.selection else []
+                    if sel_rows and 0 <= sel_rows[0] < len(rows):
+                        st.session_state.t4_selected_tool_id = rows[sel_rows[0]]["ID"]
+            
+            with col_detail:
+                sel_id = st.session_state.get("t4_selected_tool_id")
+                if sel_id:
+                    sel_tool = next((t for t in t4_tools if t.get("id") == sel_id), None)
+                    if sel_tool:
+                        st.markdown(f"**{sel_tool.get('vendor', '')} — {sel_tool.get('product_name', '')}**")
+                        st.caption(f"License: {sel_tool.get('license_model', 'Unknown')}")
+                        
+                        if sel_tool.get("url"):
+                            st.markdown(f"[Official Website]({sel_tool['url']})")
+                        
+                        support_pct = sel_tool.get("support_rate", 0) * 100
+                        st.markdown(f"**Feature Support:** {support_pct:.1f}%")
+                        st.progress(int(support_pct))
+                        
+                        st.markdown(f"**Domains ({sel_tool.get('domain_count', 0)}):**")
+                        domain_list = sel_tool.get("domain_list", [])
+                        st.markdown(", ".join(domain_list[:6]))
+                        
+                        with st.expander("Subdomain Breakdown", expanded=False):
+                            subdomain_features = run_async(get_t4_tool_subdomain_features_list(sel_id))
+                            for entry in subdomain_features:
+                                pct = entry.get("support_pct", 0)
+                                level = entry.get("support_level", "Unknown")
+                                color = "#22c55e" if level == "High" else ("#eab308" if level == "Medium" else "#ef4444")
+                                st.markdown(
+                                    f"- **{entry.get('subdomain_name', '')}** ({entry.get('domain_name', '')}): "
+                                    f"{entry.get('supported_subfeatures', 0)}/{entry.get('total_subfeatures', 0)} "
+                                    f"[{pct:.0f}%] <span style='color:{color}'>{level}</span>",
+                                    unsafe_allow_html=True,
+                                )
+                    else:
+                        st.info("Select a tool from the list.")
+                else:
+                    st.info("Select a tool from the list to view details.")
+            
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                if st.button("Run Analysis", width="stretch", icon=":material/play_arrow:"):
+                    st.session_state._pending_t4_pipeline = (False,)
+                    st.rerun()
+            with c2:
+                if st.button("Reset & Rebuild", width="stretch", icon=":material/delete_forever:"):
+                    st.session_state._pending_t4_pipeline = (True,)
+                    st.rerun()
+            with c3:
+                if st.button("Export All", width="stretch", icon=":material/download:"):
+                    st.session_state._pending_t4_action = ("export_t4",)
+                    st.rerun()
+            
+            if auto_refresh_t4:
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=3000, key="ar_t4")
+        
+        with tab2:
+            sync_pipeline_state()
+            
+            auto_refresh_t4_pipelines = st.toggle("Auto-refresh (3s)", value=False, key="auto_refresh_t4_pipelines")
+            
+            t4_pipeline = st.session_state.running_pipelines.get("t4_analysis")
+            
+            if not t4_pipeline:
+                st.info("No T4 analysis is running. Click **Run Analysis** in the Explorer tab.")
+            else:
+                status = t4_pipeline.get("status", "queued")
+                progress = t4_pipeline.get("progress", 0.0)
+                step = t4_pipeline.get("step", "s1").upper()
+                message = t4_pipeline.get("message", "")
+                s_color = {"running": "#3b82f6", "done": "#22c55e", "failed": "#ef4444"}.get(status, "#94a3b8")
+                
+                with st.container(border=True):
+                    h1, h2 = st.columns([4, 1])
+                    with h1:
+                        st.markdown("**T4 Tool-Level Analysis**")
+                    with h2:
+                        st.markdown(f"<span style='color:{s_color}; font-weight:600;'>{status.capitalize()}</span>", unsafe_allow_html=True)
+                    
+                    if status in ("running", "queued"):
+                        st.progress(progress, text=f"[{step}] {message}" if status == "running" else "Waiting in queue...")
+                        stages = [
+                            ("S1", "Bootstrap", progress >= 0.05),
+                            ("S2", "Enrich", progress >= 0.40),
+                            ("S3", "Features", progress >= 0.65),
+                            ("S4", "Domains", progress >= 0.85),
+                        ]
+                        sc = st.columns(4)
+                        for i, (sl, slabel, done) in enumerate(stages):
+                            sc[i].markdown(
+                                f"<div style='text-align:center; font-size:11px; color:#64748b;'>"
+                                f"{'✔' if done else '○'} <strong>{sl}</strong><br/>{slabel}</div>",
+                                unsafe_allow_html=True,
+                            )
+                    elif status == "failed":
+                        st.error(f"Analysis failed: {message or 'Unknown error'}")
+                    elif status == "done":
+                        st.success(f"Complete — {t4_stats.get('total', 0)} tools analyzed")
+            
+            if auto_refresh_t4_pipelines:
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=3000, key="ar_t4_pipelines")
+        
+        with tab3:
+            render_log_panel()
+
+    elif current_nav == "Strategic Score Card (T5)":
+        st.markdown(f"<h1 style='margin-bottom:0px; padding-bottom:8px;'>{icon_html('leaderboard', 'actions', 32)} Score Card</h1>", unsafe_allow_html=True)
+        st.markdown("Unified multi-dimensional readiness score for canonical tools across 5 dimensions.")
+        
+        if st.session_state.status_message:
+            st.toast(st.session_state.status_message)
+            st.session_state.status_message = ""
+            
+        from db.t5_store import get_t5_scores, get_t5_stats, get_t5_run_status
+        
+        with st.spinner("Loading scores..."):
+            t5_scores = run_async(get_t5_scores())
+            t5_stats = run_async(get_t5_stats())
+            t5_run = run_async(get_t5_run_status())
+            
+        sync_pipeline_state()
+        
+        pending_t5 = st.session_state.pop("_pending_t5_action", None)
+        if pending_t5:
+            action_type = pending_t5[0]
+            if action_type == "export_t5":
+                try:
+                    from excel.t5_bridge import export_t5_workbook
+                    output_path = run_async(export_t5_workbook())
+                    st.session_state.last_export_path = output_path
+                    st.toast("Excel exported successfully", icon=":material/check_circle:")
+                except Exception as e:
+                    st.toast(f"Export failed: {e}", icon=":material/error:")
+            elif action_type == "stop_t5_pipeline":
+                pipeline_key = "t5_scorecard"
+                stop_flag = _PIPELINE_STOP_FLAGS.get(pipeline_key)
+                if stop_flag:
+                    stop_flag.set()
+                future = _PIPELINE_FUTURES.get(pipeline_key)
+                if future and not future.done():
+                    future.cancel()
+                with _PIPELINE_LOCK:
+                    if pipeline_key in _PIPELINE_PROGRESS:
+                        _PIPELINE_PROGRESS[pipeline_key]["status"] = "stopped"
+                        _PIPELINE_PROGRESS[pipeline_key]["message"] = "Stopped by user"
+                st.toast("Pipeline stop requested", icon=":material/stop_circle:")
+            elif action_type == "reset_t5_data":
+                pipeline_key = "t5_scorecard"
+                # Stop any running pipeline first
+                stop_flag = _PIPELINE_STOP_FLAGS.get(pipeline_key)
+                if stop_flag:
+                    stop_flag.set()
+                future = _PIPELINE_FUTURES.get(pipeline_key)
+                if future and not future.done():
+                    future.cancel()
+                # Clear in-memory state
+                with _PIPELINE_LOCK:
+                    _PIPELINE_PROGRESS.pop(pipeline_key, None)
+                st.session_state.running_pipelines.pop(pipeline_key, None)
+                st.session_state.pop("t5_selected_tool_id", None)
+                # Clear database
+                from db.t5_store import reset_t5_data
+                run_async(reset_t5_data())
+                st.toast("T5 data cleared — all scores, ranks and insights removed.", icon=":material/delete_forever:")
+
+        tab1, tab2, tab3 = st.tabs([":material/analytics: Explorer", ":material/play_arrow: Active Pipelines", ":material/description: Logs"])
+        
+        with tab1:
+            hcol1, hcol2, hcol3, hcol4 = st.columns([2, 1, 1, 1])
+            with hcol1:
+                st.markdown(
+                    f"<p style='font-size:13px; color:#64748b; margin:6px 0 0;'>"
+                    f"{len(t5_scores)} tools scored. Avg Composite: {t5_stats.get('avg_composite') or 0.0:.1f}"
+                    "</p>",
+                    unsafe_allow_html=True,
+                )
+            with hcol2:
+                auto_refresh_t5 = st.toggle("Auto (3s)", value=False, key="auto_refresh_t5")
+            with hcol3:
+                if st.button("Refresh", width="stretch", icon=":material/refresh:", key="t5_refresh"):
+                    st.rerun()
+            with hcol4:
+                if st.button("Export", width="stretch", icon=":material/download:", key="t5_export"):
+                    st.session_state._pending_t5_action = ("export_t5",)
+                    st.rerun()
+                    
+            st.markdown("<hr style='border-color:#1e2533; margin:8px 0;'>", unsafe_allow_html=True)
+            
+            fcol1, fcol2, fcol3 = st.columns(3)
+            with fcol1:
+                grade_filter = st.selectbox("Grade", options=["All", "A+", "A", "B+", "B", "C", "D"], key="t5_grade_filter")
+            with fcol2:
+                min_score = st.slider("Min Composite Score", 0, 100, 0, key="t5_min_score")
+            with fcol3:
+                domains = ["All"] + sorted(list(set(s.get("primary_domain", "") for s in t5_scores if s.get("primary_domain"))))
+                domain_filter = st.selectbox("Domain", options=domains, key="t5_domain_filter")
+                
+            filtered_scores = [
+                s for s in t5_scores
+                if (grade_filter == "All" or s.get("grade") == grade_filter)
+                and (domain_filter == "All" or s.get("primary_domain") == domain_filter)
+                and s.get("composite_score", 0) >= min_score
+            ]
+            
+            col_list, col_detail = st.columns([1.2, 1.8], gap="medium")
+            
+            with col_list:
+                if not filtered_scores:
+                    st.info("No scores match the filters.")
+                else:
+                    import pandas as pd
+                    rows = []
+                    for s in filtered_scores:
+                        rows.append({
+                            "T4_ID": s.get("t4_tool_id"),
+                            "Domain": s.get("primary_domain", ""),
+                            "Rank": s.get("domain_rank", "-"),
+                            "Vendor": s.get("vendor", ""),
+                            "Product": s.get("product_name", ""),
+                            "Category": s.get("tool_category", ""),
+                            "Grade": s.get("grade", "-"),
+                            "Score": f"{s.get('composite_score', 0):.1f}"
+                        })
+                    df = pd.DataFrame(rows)
+                    event = st.dataframe(
+                        df.drop(columns=["T4_ID"]),
+                        width="stretch", hide_index=True, height=min(35 * len(rows) + 40, 400),
+                        on_select="rerun", selection_mode="single-row", key="t5_table"
+                    )
+                    sel_rows = event.selection.get("rows", []) if event and event.selection else []
+                    if sel_rows and 0 <= sel_rows[0] < len(rows):
+                        st.session_state.t5_selected_tool_id = rows[sel_rows[0]]["T4_ID"]
+            
+            with col_detail:
+                sel_id = st.session_state.get("t5_selected_tool_id")
+                if sel_id:
+                    sel_tool = next((s for s in t5_scores if s.get("t4_tool_id") == sel_id), None)
+                    if sel_tool:
+                        grade = sel_tool.get("grade", "-")
+                        c_grade = {"A+": "#15803d", "A": "#16a34a", "B+": "#ca8a04", "B": "#eab308", "C": "#ea580c", "D": "#b91c1c"}.get(grade, "#94a3b8")
+                        
+                        st.markdown(f"**{sel_tool.get('vendor', '')} — {sel_tool.get('product_name', '')}**")
+                        st.markdown(
+                            f"<span style='font-size:24px; font-weight:bold; color:{c_grade}'>{grade}</span>"
+                            f"<span style='font-size:18px; color:#f8fafc; margin-left:12px;'>{sel_tool.get('composite_score', 0):.1f} / 100</span>",
+                            unsafe_allow_html=True
+                        )
+                        
+                        if sel_tool.get("quadrant_position"):
+                            st.markdown(f"**Quadrant:** {sel_tool['quadrant_position']}")
+                            
+                        if sel_tool.get("strategic_insight"):
+                            st.info(sel_tool["strategic_insight"], icon=":material/psychiatry:")
+                            
+                        st.markdown("**Dimensions**")
+                        dims = [
+                            ("D1: Feature Coverage", sel_tool.get("d1_feature_coverage", 0)),
+                            ("D2: Domain Breadth", sel_tool.get("d2_domain_breadth", 0)),
+                            ("D3: NIST Alignment", sel_tool.get("d3_nist_alignment", 0)),
+                            ("D4: Market Maturity", sel_tool.get("d4_market_maturity", 0)),
+                            ("D5: Ranking Signal", sel_tool.get("d5_ranking_signal", 0))
+                        ]
+                        for name, val in dims:
+                            st.markdown(f"<div style='font-size:12px; margin-bottom:2px;'>{name} <b>{val:.1f}</b></div>", unsafe_allow_html=True)
+                            st.progress(int(val))
+                    else:
+                        st.info("Select a tool from the list.")
+                else:
+                    st.info("Select a tool from the list to view Score Card details.")
+                    
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                if st.button("Run Score Card", width="stretch", icon=":material/play_arrow:", key="t5_run"):
+                    st.session_state._pending_t5_pipeline = (False,)
+                    st.rerun()
+            with c2:
+                if st.button("Reset Data", width="stretch", icon=":material/delete_forever:", key="t5_reset"):
+                    st.session_state._pending_t5_action = ("reset_t5_data",)
+                    st.rerun()
+            with c3:
+                pass
+                
+            if auto_refresh_t5:
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=3000, key="ar_t5")
+                
+        with tab2:
+            sync_pipeline_state()
+            
+            auto_refresh_t5_pipelines = st.toggle("Auto-refresh (3s)", value=False, key="auto_refresh_t5_pipelines")
+            
+            t5_pipeline = st.session_state.running_pipelines.get("t5_scorecard")
+            
+            if not t5_pipeline:
+                st.info("No T5 Score Card pipeline is running.")
+            else:
+                status = t5_pipeline.get("status", "queued")
+                progress = t5_pipeline.get("progress", 0.0)
+                step = t5_pipeline.get("step", "s1").upper()
+                message = t5_pipeline.get("message", "")
+                s_color = {"running": "#3b82f6", "done": "#22c55e", "failed": "#ef4444", "stopped": "#f59e0b"}.get(status, "#94a3b8")
+                
+                with st.container(border=True):
+                    h1, h2 = st.columns([4, 1])
+                    with h1:
+                        st.markdown("**T5 Score Card**")
+                    with h2:
+                        st.markdown(f"<span style='color:{s_color}; font-weight:600;'>{status.capitalize()}</span>", unsafe_allow_html=True)
+                        
+                    if status in ("running", "queued"):
+                        st.progress(progress, text=f"[{step}] {message}" if status == "running" else "Waiting in queue...")
+                        stages = [("S1", "Init", progress > 0.1), ("S2/3", "Scoring", progress > 0.5), ("S4", "LLM", progress > 0.8), ("S5", "Excel", progress >= 0.95)]
+                        sc = st.columns(4)
+                        for i, (sl, slabel, done) in enumerate(stages):
+                            sc[i].markdown(
+                                f"<div style='text-align:center; font-size:11px; color:#64748b;'>"
+                                f"{'✔' if done else '○'} <strong>{sl}</strong><br/>{slabel}</div>",
+                                unsafe_allow_html=True,
+                            )
+                        st.markdown("")
+                        if st.button(
+                            "Stop Pipeline",
+                            icon=":material/stop_circle:",
+                            width="content",
+                            key="t5_stop_btn",
+                            type="primary",
+                        ):
+                            st.session_state._pending_t5_action = ("stop_t5_pipeline",)
+                            st.rerun()
+                    elif status == "failed":
+                        st.error(f"Failed: {message or 'Unknown error'}")
+                    elif status == "stopped":
+                        st.warning(f"Stopped by user at {int(progress * 100)}% — partial scores may be saved.")
+                    elif status == "done":
+                        st.success(f"Complete — {t5_stats.get('total', 0)} tools scored")
+                        
+            if auto_refresh_t5_pipelines:
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=3000, key="ar_t5_pipelines")
+
+        with tab3:
+            render_log_panel()
+
     pending_pipeline = st.session_state.pop("_pending_t2_pipeline", None)
 
     if pending_pipeline:
@@ -1937,9 +2414,163 @@ def main() -> None:
         st.toast("T3 classification started")
         st.rerun()
 
+    # ── T4: pending pipeline handler (runs outside nav branch so it fires every render) ──
+    pending_t4 = st.session_state.pop("_pending_t4_pipeline", None)
+    if pending_t4:
+        reset_t4 = pending_t4[0]
+        event_queue = st.session_state.event_queue
+        pipeline_key = "t4_analysis"
+
+        existing_t4 = st.session_state.running_pipelines.get(pipeline_key, {})
+        if existing_t4.get("status") == "running" and not reset_t4:
+            st.toast("T4 analysis is already running", icon=":material/info:")
+            st.rerun()
+
+        initial = {
+            "subdomain": "t4_analysis",
+            "progress": 0.0,
+            "step": "s1",
+            "message": "Queued...",
+            "status": "queued",
+        }
+        with _PIPELINE_LOCK:
+            _PIPELINE_PROGRESS[pipeline_key] = initial
+            st.session_state.running_pipelines[pipeline_key] = dict(initial)
+
+        def _run_t4_in_thread(_queue=event_queue, _pkey=pipeline_key, _reset=reset_t4):
+            with _PIPELINE_LOCK:
+                if _pkey in _PIPELINE_PROGRESS:
+                    _PIPELINE_PROGRESS[_pkey]["status"] = "running"
+                    _PIPELINE_PROGRESS[_pkey]["message"] = "Starting..."
+            import asyncio
+            from orchestrator.t4_graph import run_t4_pipeline
+
+            async def _run():
+                task = asyncio.create_task(run_t4_pipeline(_queue, reset_existing=_reset))
+                while not task.done():
+                    try:
+                        event = await asyncio.wait_for(_queue.get(), timeout=settings.event_timeout)
+                        if event.subdomain == "t4_analysis":
+                            with _PIPELINE_LOCK:
+                                if _pkey in _PIPELINE_PROGRESS:
+                                    _PIPELINE_PROGRESS[_pkey].update({
+                                        "progress": event.progress_pct,
+                                        "step": event.step,
+                                        "message": event.message,
+                                        "status": "running",
+                                    })
+                    except asyncio.TimeoutError:
+                        continue
+                with _PIPELINE_LOCK:
+                    if _pkey in _PIPELINE_PROGRESS:
+                        try:
+                            success = task.result()
+                        except Exception:
+                            success = False
+                        _PIPELINE_PROGRESS[_pkey]["status"] = "done" if success else "failed"
+
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(_run())
+            except Exception as exc:
+                logger.error(f"T4 pipeline thread failed: {exc}")
+                with _PIPELINE_LOCK:
+                    if _pkey in _PIPELINE_PROGRESS:
+                        _PIPELINE_PROGRESS[_pkey]["status"] = "failed"
+            finally:
+                loop.close()
+
+        future = _EXECUTOR.submit(_run_t4_in_thread)
+        _PIPELINE_FUTURES[pipeline_key] = future
+        st.toast("T4 analysis started")
+        st.rerun()
+
+    # ── T5: pending pipeline handler ──
+    pending_t5 = st.session_state.pop("_pending_t5_pipeline", None)
+    if pending_t5:
+        reset_t5 = pending_t5[0]
+        pipeline_key = "t5_scorecard"
+
+        existing_t5 = st.session_state.running_pipelines.get(pipeline_key, {})
+        if existing_t5.get("status") == "running" and not reset_t5:
+            st.toast("T5 Score Card is already running", icon=":material/info:")
+            st.rerun()
+
+        initial = {
+            "subdomain": "t5_scorecard",
+            "progress": 0.0,
+            "step": "s1",
+            "message": "Queued...",
+            "status": "queued",
+        }
+        with _PIPELINE_LOCK:
+            _PIPELINE_PROGRESS[pipeline_key] = initial
+            st.session_state.running_pipelines[pipeline_key] = dict(initial)
+
+        # Clear any old stop flag and create a fresh one for this run
+        stop_event = threading.Event()
+        _PIPELINE_STOP_FLAGS[pipeline_key] = stop_event
+
+        def _run_t5_in_thread(_pkey=pipeline_key, _reset=reset_t5, _stop=stop_event):
+            with _PIPELINE_LOCK:
+                if _pkey in _PIPELINE_PROGRESS:
+                    _PIPELINE_PROGRESS[_pkey]["status"] = "running"
+                    _PIPELINE_PROGRESS[_pkey]["message"] = "Starting..."
+            import asyncio
+            from orchestrator.t5_graph import run_t5_pipeline
+
+            async def _run():
+                _queue = asyncio.Queue()
+                task = asyncio.create_task(run_t5_pipeline(_queue, reset_existing=_reset))
+                while not task.done():
+                    # Check for user-requested stop
+                    if _stop.is_set():
+                        task.cancel()
+                        with _PIPELINE_LOCK:
+                            if _pkey in _PIPELINE_PROGRESS:
+                                _PIPELINE_PROGRESS[_pkey]["status"] = "stopped"
+                                _PIPELINE_PROGRESS[_pkey]["message"] = "Stopped by user"
+                        logger.info(f"T5 pipeline cancelled by user")
+                        break
+                    try:
+                        event = await asyncio.wait_for(_queue.get(), timeout=settings.event_timeout)
+                        if event.subdomain == "t5_scorecard":
+                            with _PIPELINE_LOCK:
+                                if _pkey in _PIPELINE_PROGRESS:
+                                    _PIPELINE_PROGRESS[_pkey].update({
+                                        "progress": event.progress_pct,
+                                        "step": event.step,
+                                        "message": event.message,
+                                        "status": "running",
+                                    })
+                    except asyncio.TimeoutError:
+                        continue
+                with _PIPELINE_LOCK:
+                    if _pkey in _PIPELINE_PROGRESS and _PIPELINE_PROGRESS[_pkey]["status"] not in ("stopped",):
+                        try:
+                            success = task.result()
+                        except Exception:
+                            success = False
+                        _PIPELINE_PROGRESS[_pkey]["status"] = "done" if success else "failed"
+
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(_run())
+            except Exception as exc:
+                logger.error(f"T5 pipeline thread failed: {exc}")
+                with _PIPELINE_LOCK:
+                    if _pkey in _PIPELINE_PROGRESS:
+                        _PIPELINE_PROGRESS[_pkey]["status"] = "failed"
+            finally:
+                loop.close()
+
+        future = _EXECUTOR.submit(_run_t5_in_thread)
+        _PIPELINE_FUTURES[pipeline_key] = future
+        st.toast("T5 Score Card started")
+        st.rerun()
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        run_async(shutdown_app_async())
+    main()

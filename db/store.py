@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 class Database:
+    _schema_applied = False
+
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or settings.db_path
         self._local = threading.local()
@@ -19,12 +21,22 @@ class Database:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-            conn = await aiosqlite.connect(self.db_path)
+            conn = await aiosqlite.connect(self.db_path, timeout=30.0)
             conn.row_factory = aiosqlite.Row
-            # Apply schema on every new per-thread connection so all tables
-            # (including T3) exist regardless of which thread opens the DB.
-            await conn.executescript(SCHEMA_SQL)
-            await conn.commit()
+            
+            # Enable WAL mode for concurrent reads/writes
+            await conn.execute("PRAGMA journal_mode=WAL;")
+            await conn.execute("PRAGMA synchronous=NORMAL;")
+            
+            # Apply schema only once per process
+            if not Database._schema_applied:
+                try:
+                    await conn.executescript(SCHEMA_SQL)
+                    await conn.commit()
+                    Database._schema_applied = True
+                except Exception as e:
+                    logger.debug(f"Schema application delayed/skipped: {e}")
+                    
             self._local.conn = conn
         return conn
 
@@ -68,15 +80,30 @@ db = Database()
 
 async def init_db() -> None:
     await db.connect()
-    await _seed_domains()
-    await _reset_stale_statuses()
-    await _seed_t2_subdomain_rankings()
-    await _reset_stale_t3_status()
+    try:
+        await _seed_domains()
+        await _reset_stale_statuses()
+        await _seed_t2_subdomain_rankings()
+        await _reset_stale_t3_status()
+        await _reset_stale_t4_status()
+        await _reset_stale_t5_status()
+    except Exception as e:
+        # If db is locked by a background pipeline, skip init writes gracefully.
+        # They will succeed on the next Streamlit refresh cycle.
+        logger.debug(f"init_db: skipping seed/reset (db busy): {e}")
 
 
 
 async def shutdown_db() -> None:
     await db.close()
+
+
+async def _reset_stale_t4_status() -> None:
+    """Reset any T4 analysis run left in 'running' state from a previous crash."""
+    await db.execute(
+        "UPDATE t4_analysis_runs SET status = 'failed' WHERE status = 'running'"
+    )
+    await db.commit()
 
 
 async def _reset_stale_statuses() -> None:
@@ -96,6 +123,14 @@ async def _reset_stale_t3_status() -> None:
     """Reset any T3 classification run left in 'running' state from a previous crash."""
     await db.execute(
         "UPDATE t3_classification_runs SET status = 'failed' WHERE status = 'running'"
+    )
+    await db.commit()
+
+
+async def _reset_stale_t5_status() -> None:
+    """Reset any T5 score run left in 'running' state from a previous crash."""
+    await db.execute(
+        "UPDATE t5_score_runs SET status = 'failed' WHERE status = 'running'"
     )
     await db.commit()
 

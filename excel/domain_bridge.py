@@ -94,7 +94,7 @@ def _write_domain_sheet(
     subfeatures: list[dict],
     matrix_cells: list[dict],
 ) -> None:
-    sheet_name = domain_name[:31]
+    sheet_name = domain_name[:30]
     ws = wb.create_sheet(sheet_name)
     
     _write_ranking_section(ws, domain_name, tools_enterprise, tools_opensource)

@@ -337,4 +337,54 @@ CREATE INDEX IF NOT EXISTS idx_t4_tool_domains_tool ON t4_tool_domains(t4_tool_i
 CREATE INDEX IF NOT EXISTS idx_t4_tool_features_tool ON t4_tool_features(t4_tool_id);
 CREATE INDEX IF NOT EXISTS idx_t4_tool_sd_features_tool ON t4_tool_subdomain_features(t4_tool_id);
 CREATE INDEX IF NOT EXISTS idx_t4_tool_sd_features_subdomain ON t4_tool_subdomain_features(subdomain_id);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TECHNIQUE 5: Tool Score Card
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- One row per unique tool (sourced from t4_tools)
+CREATE TABLE IF NOT EXISTS t5_tool_scores (
+    id INTEGER PRIMARY KEY,
+    t4_tool_id INTEGER UNIQUE REFERENCES t4_tools(id) ON DELETE CASCADE,
+    vendor TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    primary_domain TEXT,
+    tool_category TEXT,
+
+    -- Dimension scores (0–100 each)
+    d1_feature_coverage  REAL DEFAULT 0.0,
+    d2_domain_breadth    REAL DEFAULT 0.0,
+    d3_nist_alignment    REAL DEFAULT 0.0,
+    d4_market_maturity   REAL DEFAULT 0.0,
+    d5_ranking_signal    REAL DEFAULT 0.0,
+
+    -- Composite
+    composite_score      REAL DEFAULT 0.0,
+    grade                TEXT,           -- 'A+', 'A', 'B+', 'B', 'C', 'D'
+    domain_rank          INTEGER,        -- Rank within primary_domain
+
+    -- Optional LLM insight (1 sentence)
+    quadrant_position    TEXT,
+    strategic_insight    TEXT,
+
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Pipeline run tracker
+CREATE TABLE IF NOT EXISTS t5_score_runs (
+    id INTEGER PRIMARY KEY,
+    status TEXT DEFAULT 'pending'
+        CHECK(status IN ('pending', 'running', 'done', 'failed')),
+    total_tools    INTEGER DEFAULT 0,
+    scored_tools   INTEGER DEFAULT 0,
+    started_at     TIMESTAMP,
+    completed_at   TIMESTAMP,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_t5_scores_tool     ON t5_tool_scores(t4_tool_id);
+CREATE INDEX IF NOT EXISTS idx_t5_scores_domain   ON t5_tool_scores(primary_domain);
+CREATE INDEX IF NOT EXISTS idx_t5_scores_rank     ON t5_tool_scores(domain_rank);
+CREATE INDEX IF NOT EXISTS idx_t5_scores_grade    ON t5_tool_scores(grade);
+CREATE INDEX IF NOT EXISTS idx_t5_scores_composite ON t5_tool_scores(composite_score DESC);
 """

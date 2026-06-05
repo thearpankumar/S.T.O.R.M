@@ -237,7 +237,7 @@ def _sync_write_excel(
         if "Sheet" in wb.sheetnames:
             del wb["Sheet"]
 
-    sheet_name = f"{batch.subdomain} Matrix"
+    sheet_name = f"{batch.subdomain[:22]} Matrix"
     if sheet_name in wb.sheetnames:
         del wb[sheet_name]
 
@@ -390,7 +390,7 @@ def _sync_export_all(
         if not has_tools and not has_rows:
             continue
 
-        sheet_name = subdomain_name[:31]
+        sheet_name = subdomain_name[:30]
         ws = wb.create_sheet(sheet_name)
 
         # Add a "(Partial Data)" note in the title for non-done sheets

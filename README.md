@@ -9,11 +9,11 @@ An AI-powered research pipeline that automates cybersecurity tool discovery, fea
 
 ## Overview
 
-The Cybersec Research Agent is an advanced analytical engine that systematically investigates 19 cybersecurity domains. It utilizes multi-agent LLM pipelines across three distinct research techniques to discover subdomains, rank industry tools, extract differentiating features, and classify them against industry frameworks (NIST CSF 2.0).
+The Cybersec Research Agent is an advanced analytical engine that systematically investigates 19 cybersecurity domains. It utilizes multi-agent LLM pipelines across five distinct research techniques to discover subdomains, rank industry tools, extract differentiating features, classify them against industry frameworks (NIST CSF 2.0), and score them on a unified multi-dimensional metric.
 
 ## Research Techniques
 
-The agent employs three distinct pipelines to analyze the cybersecurity tooling landscape at varying depths.
+The agent employs five distinct pipelines to analyze the cybersecurity tooling landscape at varying depths.
 
 ### Technique 1: Subdomain Feature Matrix (M1–M5)
 Focuses on granular analysis at the subdomain level. It discovers specific subdomains, identifies relevant tools, extracts granular features, and generates comprehensive Excel comparison matrices.
@@ -109,6 +109,74 @@ flowchart LR
     
     S1 --> S2 --> S3
     S3 --> EXCEL3[("Excel Export")]
+    ```
+
+### Technique 4: Tool-Level Cross-Domain Analysis (S1–S5)
+Analyzes individual tools that appear across multiple domains/subdomains, detecting license models, aggregating feature support metrics, and calculating domain coverage.
+
+```mermaid
+flowchart LR
+    subgraph S1["S1: Bootstrap"]
+        direction TB
+        T1[("T1 Tools")] --> DEDUP["SQL Deduplication"]
+    end
+    
+    subgraph S2["S2: Enrichment"]
+        direction TB
+        DEDUP --> WEB["Web Search"]
+        WEB --> LLM["LLM License Detection"]
+    end
+    
+    subgraph S3["S3: Features"]
+        direction TB
+        MATRIX[("Matrix Cells")] --> AGG["Aggregate Support"]
+    end
+    
+    subgraph S4["S4: Domains"]
+        direction TB
+        AGG --> DOMAINS["Domain Mapping"]
+    end
+    
+    subgraph S5["S5: Excel"]
+        direction TB
+        DOMAINS --> EXCEL4[("Excel Dashboard")]
+    end
+    
+    S1 --> S2 --> S3 --> S4 --> S5
+```
+
+### Technique 5: Strategic Score Card (S1–S5)
+A synthesis layer that evaluates every canonical tool across five weighted dimensions (Feature Coverage, Domain Breadth, NIST Alignment, Market Maturity, Ranking Signal) to generate a unified readiness score (0-100) and letter grade.
+
+```mermaid
+flowchart LR
+    subgraph S1["S1: Bootstrap"]
+        direction TB
+        T4[("T4 Canonical Tools")] --> JOIN["Join T2 & T3 Data"]
+    end
+    
+    subgraph S2["S2: Score Compute"]
+        direction TB
+        JOIN --> DIM["Calculate D1-D5"]
+    end
+    
+    subgraph S3["S3: Aggregate"]
+        direction TB
+        DIM --> COMP["Composite & Rank"]
+        COMP --> DB[("T5 DB")]
+    end
+    
+    subgraph S4["S4: LLM Insights"]
+        direction TB
+        DB --> LLM["Generate Strategic Summary"]
+    end
+    
+    subgraph S5["S5: Excel"]
+        direction TB
+        LLM --> EXCEL5[("Score Card Dashboard")]
+    end
+    
+    S1 --> S2 --> S3 --> S4 --> S5
 ```
 
 ## Architecture
@@ -120,15 +188,19 @@ flowchart LR
     end
 
     subgraph ORCH["Orchestrator"]
-        GRAPH["graph.py"]
+        GRAPH["graph.py (T1)"]
+        T2G["t2_graph.py"]
+        T3G["t3_graph.py"]
+        T4G["t4_graph.py"]
+        T5G["t5_graph.py"]
     end
 
     subgraph AGENTS["Agents"]
-        A1["discovery.py"]
-        A2["tool_discovery.py"]
-        A3["feature_discovery.py"]
-        A4["subfeature_discovery.py"]
-        A5["matrix_population.py"]
+        T1["T1: Discovery & Matrix Agents"]
+        T2["T2: Domain Ranker"]
+        T3["T3: NIST Classifier"]
+        T4["T4: Web Enricher"]
+        T5["T5: Scorer Engine"]
     end
 
     subgraph LLM["LLM Layer"]
@@ -150,11 +222,11 @@ flowchart LR
     CLI_MODE -->|"Streamlit UI"| TUI["Streamlit Web App"]
     CLI_MODE -->|"CLI"| GRAPH
 
-    GRAPH --> A1 & A2 & A3 & A4 & A5
-    A1 & A2 & A3 & A4 & A5 --> BEDROCK
-    A1 & A2 & A3 --> TOOLS
+    ORCH --> AGENTS
+    AGENTS --> BEDROCK
+    T1 & T2 & T4 --> TOOLS
     TOOLS --> WEB[("Web")]
-    A5 --> EXCEL
+    ORCH --> EXCEL
     AGENTS --> DB
 ```
 
@@ -266,6 +338,8 @@ The pipeline generates distinct Excel reports for each research technique, drive
 - **`output/cybersec_matrix.xlsx`** (Technique 1) - Detailed workbook containing tool-feature matrices per subdomain, with support levels: ✔ (Full), Partial, ✘ (None).
 - **`output/technique2_domain_rankings.xlsx`** (Technique 2) - Domain-level tool rankings and broader feature comparisons.
 - **`output/technique3_tool_classification.xlsx`** (Technique 3) - Global cross-domain tool classification mapping (NIST CSF 2.0), interactive dashboard, and executive summary.
+- **`output/technique4_tool_analysis.xlsx`** (Technique 4) - Tool-level cross-domain analysis with license detection, feature support metrics, and domain coverage dashboards.
+- **`output/technique5_scorecard.xlsx`** (Technique 5) - Strategic Tool Score Card featuring head-to-head dimension comparisons, LLM-generated strategic insights, and multi-dimensional readiness scores.
 
 ## License
 
